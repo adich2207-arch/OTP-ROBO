@@ -14,21 +14,18 @@ from telegram.ext import (
     MessageHandler, filters, ContextTypes, ConversationHandler
 )
 
-from pyrofork import Client
-
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 flask_app = Flask(__name__)
 
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-ADMIN_ID = int(os.getenv("ADMIN_ID"))
-DATABASE_URL = os.getenv("DATABASE_URL")
-WEBHOOK_URL = os.getenv("WEBHOOK_URL")
-PORT = int(os.getenv("PORT", "8080"))
-
-API_ID = int(os.getenv("API_ID"))
-API_HASH = os.getenv("API_HASH")
+BOT_TOKEN    = os.getenv("BOT_TOKEN")
+ADMIN_ID     = int(os.getenv("ADMIN_ID", "0"))
+DATABASE_URL = os.getenv("DATABASE_URL", "")
+WEBHOOK_URL  = os.getenv("WEBHOOK_URL", "")
+PORT         = int(os.getenv("PORT", "8080"))
+API_ID       = int(os.getenv("API_ID", "0"))
+API_HASH     = os.getenv("API_HASH", "")
 
 ptb_app = None
 
@@ -300,6 +297,7 @@ async def get_phone(update: Update, ctx):
     phone = update.message.text.strip()
     ctx.user_data["phone"] = phone
 
+    from pyrofork import Client
     client = Client("temp", api_id=API_ID, api_hash=API_HASH)
     await client.connect()
 
