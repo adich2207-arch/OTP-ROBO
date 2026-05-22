@@ -465,12 +465,27 @@ def main():
     init_db()
     ptb_app = build_app()
 
+    # Register Flask routes here so BOT_TOKEN is already loaded
+    @flask_app.get("/")
+    def health():
+        return Response("OK", status=200)
+
+    @flask_app.post(f"/webhook/{BOT_TOKEN}")
+    def webhook():
+        import asyncio
+        data = request.get_json(force=True)
+        upd  = Update.de_json(data, ptb_app.bot)
+        asyncio.run(ptb_app.process_update(upd))
+        return Response("ok", status=200)
+
     import asyncio
     async def setup():
         await ptb_app.initialize()
         await ptb_app.bot.set_webhook(f"{WEBHOOK_URL}/webhook/{BOT_TOKEN}")
+        logger.info(f"Webhook set: {WEBHOOK_URL}/webhook/{BOT_TOKEN}")
 
     asyncio.run(setup())
+    logger.info(f"Starting Flask on port {PORT}")
     flask_app.run(host="0.0.0.0", port=PORT)
 
 if __name__ == "__main__":
