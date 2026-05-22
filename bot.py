@@ -1,6 +1,7 @@
 import os
 import logging
-import libsql_client
+import psycopg
+from psycopg.rows import dict_row
 from dotenv import load_dotenv
 load_dotenv()
 from flask import Flask, request, Response
@@ -16,12 +17,11 @@ logger = logging.getLogger(__name__)
 flask_app = Flask(__name__)
 
 # ── Config ────────────────────────────────────────────────────────────────────
-BOT_TOKEN   = os.getenv("BOT_TOKEN", "YOUR_BOT_TOKEN_HERE")
-ADMIN_ID    = int(os.getenv("ADMIN_ID", "123456789"))
-WEBHOOK_URL = os.getenv("WEBHOOK_URL", "")
-PORT        = int(os.getenv("PORT", "8080"))
-TURSO_URL   = os.getenv("TURSO_URL", "")    # e.g. libsql://your-db.turso.io
-TURSO_TOKEN = os.getenv("TURSO_TOKEN", "")  # auth token from Turso dashboard
+BOT_TOKEN    = os.getenv("BOT_TOKEN", "YOUR_BOT_TOKEN_HERE")
+ADMIN_ID     = int(os.getenv("ADMIN_ID", "123456789"))
+WEBHOOK_URL  = os.getenv("WEBHOOK_URL", "")
+PORT         = int(os.getenv("PORT", "8080"))
+DATABASE_URL = os.getenv("DATABASE_URL", "")  # Render injects this automatically
 
 # Global PTB application
 ptb_app: Application = None
@@ -36,76 +36,67 @@ ptb_app: Application = None
 
 # ── Database ──────────────────────────────────────────────────────────────────
 def get_db():
-    """Return a synchronous Turso client."""
-    return libsql_client.create_client_sync(
-        url=TURSO_URL,
-        auth_token=TURSO_TOKEN,
-    )
-
-def db_exec(sql: str, args: tuple = ()):
-    """Execute a single write statement."""
-    with get_db() as db:
-        db.execute(sql, list(args))
-
-def db_query(sql: str, args: tuple = ()) -> list[dict]:
-    """Execute a read query and return list of dicts."""
-    with get_db() as db:
-        result = db.execute(sql, list(args))
-        cols = result.columns
-        return [dict(zip(cols, row)) for row in result.rows]
-
-def db_query_one(sql: str, args: tuple = ()) -> dict | None:
-    rows = db_query(sql, args)
-    return rows[0] if rows else None
+    """Return a new psycopg3 connection with dict rows."""
+    return psycopg.connect(DATABASE_URL, row_factory=dict_row)
 
 def init_db():
-    """Create tables if they don't exist. Safe on every startup."""
-    with get_db() as db:
-        db.batch([
-            """CREATE TABLE IF NOT EXISTS users (
-                user_id    INTEGER PRIMARY KEY,
+    """Create tables if they don't exist. Safe to run on every startup."""
+    with get_db() as conn:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS users (
+                user_id    BIGINT PRIMARY KEY,
                 username   TEXT,
-                balance    REAL    DEFAULT 0,
-                created_at TEXT    DEFAULT (datetime('now'))
-            )""",
-            """CREATE TABLE IF NOT EXISTS deposits (
-                id         INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id    INTEGER,
-                amount     REAL,
-                status     TEXT DEFAULT 'pending',
-                created_at TEXT DEFAULT (datetime('now'))
-            )""",
-            """CREATE TABLE IF NOT EXISTS listings (
-                id          INTEGER PRIMARY KEY AUTOINCREMENT,
-                seller_id   INTEGER,
+                balance    NUMERIC(12,2) DEFAULT 0,
+                created_at TIMESTAMPTZ   DEFAULT NOW()
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS deposits (
+                id         BIGSERIAL PRIMARY KEY,
+                user_id    BIGINT,
+                amount     NUMERIC(12,2),
+                status     TEXT        DEFAULT 'pending',
+                created_at TIMESTAMPTZ DEFAULT NOW()
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS listings (
+                id          BIGSERIAL PRIMARY KEY,
+                seller_id   BIGINT,
                 tg_username TEXT,
-                price       REAL,
-                status      TEXT DEFAULT 'active',
-                buyer_id    INTEGER,
-                created_at  TEXT DEFAULT (datetime('now'))
-            )""",
-            """CREATE TABLE IF NOT EXISTS transactions (
-                id         INTEGER PRIMARY KEY AUTOINCREMENT,
-                buyer_id   INTEGER,
-                seller_id  INTEGER,
-                listing_id INTEGER,
-                amount     REAL,
-                created_at TEXT DEFAULT (datetime('now'))
-            )""",
-        ])
+                price       NUMERIC(12,2),
+                status      TEXT        DEFAULT 'active',
+                buyer_id    BIGINT,
+                created_at  TIMESTAMPTZ DEFAULT NOW()
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS transactions (
+                id         BIGSERIAL PRIMARY KEY,
+                buyer_id   BIGINT,
+                seller_id  BIGINT,
+                listing_id BIGINT,
+                amount     NUMERIC(12,2),
+                created_at TIMESTAMPTZ DEFAULT NOW()
+            )
+        """)
     logger.info("Database initialised.")
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 def ensure_user(user_id: int, username: str):
-    db_exec(
-        "INSERT OR IGNORE INTO users (user_id, username) VALUES (?, ?)",
-        (user_id, username or "")
-    )
+    with get_db() as conn:
+        conn.execute(
+            "INSERT INTO users (user_id, username) VALUES (%s, %s) ON CONFLICT (user_id) DO NOTHING",
+            (user_id, username or "")
+        )
 
 def get_balance(user_id: int) -> float:
-    row = db_query_one("SELECT balance FROM users WHERE user_id=?", (user_id,))
-    return float(row["balance"]) if row else 0.0
+    with get_db() as conn:
+        row = conn.execute(
+            "SELECT balance FROM users WHERE user_id=%s", (user_id,)
+        ).fetchone()
+        return float(row["balance"]) if row else 0.0
 
 def main_menu_keyboard():
     return InlineKeyboardMarkup([
@@ -152,12 +143,12 @@ async def deposit_amount(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Please enter a valid positive number.")
         return DEPOSIT_AMOUNT
 
-    with get_db() as db:
-        result = db.execute(
-            "INSERT INTO deposits (user_id, amount) VALUES (?, ?) RETURNING id",
-            [user.id, amount]
-        )
-        dep_id = result.rows[0][0]
+    with get_db() as conn:
+        row = conn.execute(
+            "INSERT INTO deposits (user_id, amount) VALUES (%s, %s) RETURNING id",
+            (user.id, amount)
+        ).fetchone()
+        dep_id = row["id"]
 
     await ctx.bot.send_message(
         ADMIN_ID,
@@ -185,19 +176,21 @@ async def admin_approve_deposit(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Usage: /approve_<deposit_id>")
         return
 
-    dep = db_query_one("SELECT * FROM deposits WHERE id=?", (dep_id,))
-    if not dep:
-        await update.message.reply_text("❌ Deposit not found.")
-        return
-    if dep["status"] != "pending":
-        await update.message.reply_text("⚠️ Already processed.")
-        return
-
-    with get_db() as db:
-        db.batch([
-            ("UPDATE deposits SET status='approved' WHERE id=?", [dep_id]),
-            ("UPDATE users SET balance=balance+? WHERE user_id=?", [dep["amount"], dep["user_id"]]),
-        ])
+    with get_db() as conn:
+        dep = conn.execute(
+            "SELECT * FROM deposits WHERE id=%s", (dep_id,)
+        ).fetchone()
+        if not dep:
+            await update.message.reply_text("❌ Deposit not found.")
+            return
+        if dep["status"] != "pending":
+            await update.message.reply_text("⚠️ Already processed.")
+            return
+        conn.execute("UPDATE deposits SET status='approved' WHERE id=%s", (dep_id,))
+        conn.execute(
+            "UPDATE users SET balance=balance+%s WHERE user_id=%s",
+            (dep["amount"], dep["user_id"])
+        )
 
     await update.message.reply_text(
         f"✅ Deposit #{dep_id} approved. ${dep['amount']:.2f} credited."
@@ -266,12 +259,15 @@ async def sell_confirm(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("❌ Listing cancelled.", reply_markup=main_menu_keyboard())
         return ConversationHandler.END
 
-    uname  = ctx.user_data["sell_username"]
-    price  = ctx.user_data["sell_price"]
-    db_exec(
-        "INSERT INTO listings (seller_id, tg_username, price) VALUES (?, ?, ?)",
-        (user.id, uname, price)
-    )
+    uname = ctx.user_data["sell_username"]
+    price = ctx.user_data["sell_price"]
+
+    with get_db() as conn:
+        conn.execute(
+            "INSERT INTO listings (seller_id, tg_username, price) VALUES (%s, %s, %s)",
+            (user.id, uname, price)
+        )
+
     await query.edit_message_text(
         f"🎉 *@{uname}* listed for *${price:.2f}*!\nBuyers can now find and purchase it.",
         parse_mode="Markdown",
@@ -284,12 +280,13 @@ async def buy_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
 
-    listings = db_query(
-        "SELECT l.id, l.tg_username, l.price, u.username as seller "
-        "FROM listings l JOIN users u ON l.seller_id=u.user_id "
-        "WHERE l.status='active' AND l.seller_id != ?",
-        (query.from_user.id,)
-    )
+    with get_db() as conn:
+        listings = conn.execute(
+            "SELECT l.id, l.tg_username, l.price, u.username AS seller "
+            "FROM listings l JOIN users u ON l.seller_id=u.user_id "
+            "WHERE l.status='active' AND l.seller_id != %s",
+            (query.from_user.id,)
+        ).fetchall()
 
     if not listings:
         await query.edit_message_text(
@@ -321,16 +318,19 @@ async def buy_item(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     user = query.from_user
     ensure_user(user.id, user.username)
 
-    listing = db_query_one(
-        "SELECT l.*, u.username as seller_name FROM listings l "
-        "JOIN users u ON l.seller_id=u.user_id WHERE l.id=? AND l.status='active'",
-        (listing_id,)
-    )
+    with get_db() as conn:
+        listing = conn.execute(
+            "SELECT l.*, u.username AS seller_name FROM listings l "
+            "JOIN users u ON l.seller_id=u.user_id "
+            "WHERE l.id=%s AND l.status='active'",
+            (listing_id,)
+        ).fetchone()
+
     if not listing:
         await query.edit_message_text("❌ This listing is no longer available.")
         return
 
-    balance = get_balance(user.id)
+    balance   = get_balance(user.id)
     has_funds = balance >= float(listing["price"])
     await query.edit_message_text(
         f"🛒 *Purchase Details*\n\n"
@@ -353,35 +353,43 @@ async def buy_confirm(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     user = query.from_user
     ensure_user(user.id, user.username)
 
-    listing = db_query_one(
-        "SELECT * FROM listings WHERE id=? AND status='active'", (listing_id,)
-    )
-    if not listing:
-        await query.edit_message_text("❌ Listing no longer available.")
-        return
+    with get_db() as conn:
+        listing = conn.execute(
+            "SELECT * FROM listings WHERE id=%s AND status='active'", (listing_id,)
+        ).fetchone()
 
-    balance = get_balance(user.id)
-    if balance < float(listing["price"]):
-        await query.edit_message_text(
-            f"❌ Insufficient balance.\nYour balance: *${balance:.2f}*\n"
-            f"Required: *${listing['price']:.2f}*\n\nPlease deposit first.",
-            parse_mode="Markdown",
-            reply_markup=main_menu_keyboard()
+        if not listing:
+            await query.edit_message_text("❌ Listing no longer available.")
+            return
+
+        balance = get_balance(user.id)
+        if balance < float(listing["price"]):
+            await query.edit_message_text(
+                f"❌ Insufficient balance.\nYour balance: *${balance:.2f}*\n"
+                f"Required: *${listing['price']:.2f}*\n\nPlease deposit first.",
+                parse_mode="Markdown",
+                reply_markup=main_menu_keyboard()
+            )
+            return
+
+        # Atomic trade — all in one transaction
+        conn.execute(
+            "UPDATE users SET balance=balance-%s WHERE user_id=%s",
+            (listing["price"], user.id)
         )
-        return
-
-    # Execute trade atomically
-    with get_db() as db:
-        db.batch([
-            ("UPDATE users SET balance=balance-? WHERE user_id=?",
-             [listing["price"], user.id]),
-            ("UPDATE users SET balance=balance+? WHERE user_id=?",
-             [listing["price"], listing["seller_id"]]),
-            ("UPDATE listings SET status='sold', buyer_id=? WHERE id=?",
-             [user.id, listing_id]),
-            ("INSERT INTO transactions (buyer_id, seller_id, listing_id, amount) VALUES (?,?,?,?)",
-             [user.id, listing["seller_id"], listing_id, listing["price"]]),
-        ])
+        conn.execute(
+            "UPDATE users SET balance=balance+%s WHERE user_id=%s",
+            (listing["price"], listing["seller_id"])
+        )
+        conn.execute(
+            "UPDATE listings SET status='sold', buyer_id=%s WHERE id=%s",
+            (user.id, listing_id)
+        )
+        conn.execute(
+            "INSERT INTO transactions (buyer_id, seller_id, listing_id, amount) "
+            "VALUES (%s, %s, %s, %s)",
+            (user.id, listing["seller_id"], listing_id, listing["price"])
+        )
 
     await query.edit_message_text(
         f"🎉 *Purchase Successful!*\n\n"
@@ -420,10 +428,11 @@ async def my_listings(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     user = query.from_user
 
-    rows = db_query(
-        "SELECT * FROM listings WHERE seller_id=? ORDER BY created_at DESC",
-        (user.id,)
-    )
+    with get_db() as conn:
+        rows = conn.execute(
+            "SELECT * FROM listings WHERE seller_id=%s ORDER BY created_at DESC",
+            (user.id,)
+        ).fetchall()
 
     if not rows:
         text = "📋 You have no listings yet."
@@ -456,7 +465,10 @@ async def cancel(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def admin_users(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return
-    users = db_query("SELECT * FROM users ORDER BY created_at DESC")
+    with get_db() as conn:
+        users = conn.execute(
+            "SELECT * FROM users ORDER BY created_at DESC"
+        ).fetchall()
     lines = ["👥 *All Users*\n"] + [
         f"• @{u['username'] or 'N/A'} (`{u['user_id']}`) — ${u['balance']:.2f}"
         for u in users
@@ -466,10 +478,12 @@ async def admin_users(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def admin_pending(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return
-    deps = db_query(
-        "SELECT d.*, u.username FROM deposits d JOIN users u ON d.user_id=u.user_id "
-        "WHERE d.status='pending'"
-    )
+    with get_db() as conn:
+        deps = conn.execute(
+            "SELECT d.*, u.username FROM deposits d "
+            "JOIN users u ON d.user_id=u.user_id "
+            "WHERE d.status='pending'"
+        ).fetchall()
     if not deps:
         await update.message.reply_text("✅ No pending deposits.")
         return
@@ -514,9 +528,9 @@ def build_app() -> Application:
     app.add_handler(CommandHandler("start", start))
     app.add_handler(deposit_conv)
     app.add_handler(sell_conv)
-    app.add_handler(CallbackQueryHandler(buy_menu,    pattern="^menu_buy$"))
-    app.add_handler(CallbackQueryHandler(buy_item,    pattern=r"^buy_\d+$"))
-    app.add_handler(CallbackQueryHandler(buy_confirm, pattern=r"^buyconfirm_\d+$"))
+    app.add_handler(CallbackQueryHandler(buy_menu,     pattern="^menu_buy$"))
+    app.add_handler(CallbackQueryHandler(buy_item,     pattern=r"^buy_\d+$"))
+    app.add_handler(CallbackQueryHandler(buy_confirm,  pattern=r"^buyconfirm_\d+$"))
     app.add_handler(CallbackQueryHandler(show_balance, pattern="^menu_balance$"))
     app.add_handler(CallbackQueryHandler(my_listings,  pattern="^menu_mylistings$"))
     app.add_handler(CallbackQueryHandler(menu_back,    pattern="^menu_back$"))
