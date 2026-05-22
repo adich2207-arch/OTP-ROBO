@@ -14,7 +14,7 @@ from telegram.ext import (
     MessageHandler, filters, ContextTypes, ConversationHandler
 )
 
-from pyrogram import Client
+from pyrofork import Client
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
