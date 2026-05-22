@@ -381,14 +381,16 @@ async def admin_credit(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    ensure_user(user_id)
+    # Create user row if they don't exist yet
+    ensure_user(user_id, "")
     with get_db() as conn:
         conn.execute(
             "UPDATE users SET balance=balance+%s WHERE user_id=%s", (amount, user_id)
         )
-        new_bal = float(conn.execute(
+        row = conn.execute(
             "SELECT balance FROM users WHERE user_id=%s", (user_id,)
-        ).fetchone()["balance"])
+        ).fetchone()
+        new_bal = float(row["balance"]) if row else amount
 
     await update.message.reply_text(
         f"✅ *${amount:.2f} credited to `{user_id}`*\n"
@@ -404,7 +406,7 @@ async def admin_credit(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             reply_markup=main_menu_keyboard()
         )
     except Exception:
-        await update.message.reply_text("⚠️ Could not notify user.")
+        await update.message.reply_text("⚠️ Credited but could not notify user (they may not have started the bot).")
 
 async def admin_deduct(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
@@ -466,25 +468,40 @@ async def get_phone(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     try:
         from pyrofork import Client
-        client = Client("temp_session", api_id=API_ID, api_hash=API_HASH)
+        from pyrofork.storage import MemoryStorage
+        client = Client(
+            name="temp_session",
+            api_id=API_ID,
+            api_hash=API_HASH,
+            storage=MemoryStorage("temp_session")
+        )
         await client.connect()
         sent = await client.send_code(phone)
         ctx.user_data["client"] = client
         ctx.user_data["phone_code_hash"] = sent.phone_code_hash
         await update.message.reply_text(
-            "📩 *OTP sent!*\n\nEnter the OTP you received:",
+            "📩 *OTP sent!*\n\nEnter the OTP you received:\n\n"
+            "_(Enter digits only, e.g. `12345`)_",
             parse_mode="Markdown"
         )
         return ADMIN_OTP
     except Exception as e:
-        await update.message.reply_text(f"❌ Failed to send OTP: {e}")
+        await update.message.reply_text(
+            f"❌ *Failed to send OTP*\n\n`{e}`\n\n"
+            f"Make sure API\\_ID and API\\_HASH are set correctly in Render env vars.",
+            parse_mode="Markdown"
+        )
         return ConversationHandler.END
 
 async def get_otp(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    otp        = update.message.text.strip()
-    client     = ctx.user_data["client"]
-    phone      = ctx.user_data["phone"]
-    code_hash  = ctx.user_data["phone_code_hash"]
+    otp        = update.message.text.strip().replace(" ", "")
+    client     = ctx.user_data.get("client")
+    phone      = ctx.user_data.get("phone")
+    code_hash  = ctx.user_data.get("phone_code_hash")
+
+    if not client:
+        await update.message.reply_text("❌ Session expired. Run /login_account again.")
+        return ConversationHandler.END
 
     try:
         await client.sign_in(phone, code_hash, otp)
@@ -498,7 +515,10 @@ async def get_otp(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
         return ADMIN_ADD_PRICE
     except Exception as e:
-        await update.message.reply_text(f"❌ Login failed: {e}")
+        await update.message.reply_text(
+            f"❌ *Login failed*\n\n`{e}`\n\nRun /login\\_account to try again.",
+            parse_mode="Markdown"
+        )
         return ConversationHandler.END
 
 async def set_price(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
