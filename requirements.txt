@@ -3,4 +3,3 @@ python-dotenv==1.0.1
 flask==3.0.3
 psycopg==3.3.4
 pyrofork==2.3.42
-tgcrypto==1.2.5
