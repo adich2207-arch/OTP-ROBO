@@ -103,24 +103,9 @@ def back_keyboard():
     return InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back to Menu", callback_data="menu_back")]])
 
 
-# ── PTB error handler (logs ALL handler exceptions to console) ────────────────
-async def error_handler(update: object, ctx: ContextTypes.DEFAULT_TYPE):
-    logger.error("Exception while handling update:", exc_info=ctx.error)
-    logger.error(traceback.format_exc())
-    # Try to notify the user something went wrong
-    try:
-        if isinstance(update, Update) and update.effective_message:
-            await update.effective_message.reply_text(
-                "⚠️ Something went wrong. Please try again or contact support."
-            )
-    except Exception:
-        pass
-
-
 # ── /start ────────────────────────────────────────────────────────────────────
 async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
-    logger.info(f"/start from user_id={user.id} username={user.username}")
     referred_by = None
     if ctx.args and ctx.args[0].startswith("ref_"):
         try:
@@ -129,10 +114,7 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 referred_by = ref_id
         except (IndexError, ValueError):
             pass
-    try:
-        ensure_user(user.id, user.username or "", referred_by)
-    except Exception as e:
-        logger.error(f"ensure_user failed: {e}\n{traceback.format_exc()}")
+    ensure_user(user.id, user.username or "", referred_by)
     if referred_by:
         try:
             await ctx.bot.send_message(referred_by,
@@ -431,109 +413,6 @@ async def admin_delete(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         conn.execute("DELETE FROM accounts WHERE id=%s", (acc_id,))
     await update.message.reply_text(f"🗑 Account #{acc_id} deleted.")
 
-# ── OTP background watcher ────────────────────────────────────────────────────
-async def _watch_for_otp(bot, user_id: int, session_str: str, phone: str, acc_id: int):
-    """
-    Runs in the background after a purchase.
-    Connects with the sold account's session, waits for a new message from
-    Telegram's service account (777000), extracts the OTP, and forwards it
-    to the buyer. Does NOT trigger the OTP itself — the user does that by
-    entering the phone number on their own device.
-    """
-    import re
-    import asyncio
-    from telethon import TelegramClient
-    from telethon.sessions import StringSession
-    from telethon.tl.functions.messages import GetHistoryRequest
-
-    try:
-        session_client = TelegramClient(StringSession(session_str), API_ID, API_HASH)
-        await session_client.connect()
-
-        # Snapshot the latest message ID from 777000 right now (before OTP arrives)
-        baseline_id = 0
-        service_peer = None
-        try:
-            service_peer = await session_client.get_input_entity(777000)
-            history = await session_client(GetHistoryRequest(
-                peer=service_peer,
-                limit=1,
-                offset_date=None, offset_id=0,
-                max_id=0, min_id=0, add_offset=0, hash=0
-            ))
-            if history.messages:
-                baseline_id = history.messages[0].id
-        except Exception as e:
-            logger.warning(f"[OTP watcher #{acc_id}] baseline error: {e}")
-
-        # Poll every 4 seconds for up to 5 minutes
-        otp_code = None
-        deadline = asyncio.get_event_loop().time() + 300
-
-        while asyncio.get_event_loop().time() < deadline:
-            await asyncio.sleep(4)
-            try:
-                history = await session_client(GetHistoryRequest(
-                    peer=service_peer,
-                    limit=5,
-                    offset_date=None, offset_id=0,
-                    max_id=0, min_id=0, add_offset=0, hash=0
-                ))
-                for msg in history.messages:
-                    if msg.id <= baseline_id:
-                        continue  # skip old messages
-                    text = getattr(msg, "message", "") or ""
-                    match = re.search(r'\b(\d{5,6})\b', text)
-                    if match:
-                        otp_code = match.group(1)
-                        break
-            except Exception as e:
-                logger.warning(f"[OTP watcher #{acc_id}] poll error: {e}")
-            if otp_code:
-                break
-
-        await session_client.disconnect()
-
-        if otp_code:
-            await bot.send_message(
-                user_id,
-                f"🔐 *Your OTP has arrived!*\n\n"
-                f"━━━━━━━━━━━━━━━━━━━━━━\n"
-                f"📱 Phone: `{phone}`\n"
-                f"🔑 OTP Code: `{otp_code}`\n"
-                f"━━━━━━━━━━━━━━━━━━━━━━\n"
-                f"⚠️ Enter this code in Telegram now.\n"
-                f"⚠️ OTP expires in a few minutes.\n"
-                f"⚠️ Do *not* share these details.",
-                parse_mode="Markdown"
-            )
-        else:
-            await bot.send_message(
-                user_id,
-                f"⏰ *OTP not detected automatically.*\n\n"
-                f"Telegram may have sent the code via SMS instead.\n\n"
-                f"📱 Phone: `{phone}`\n\n"
-                f"Please check your SMS or contact support.",
-                parse_mode="Markdown",
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("🆘 Support", url=f"https://t.me/{SUPPORT_USERNAME}")]
-                ])
-            )
-
-    except Exception as e:
-        logger.error(f"[OTP watcher #{acc_id}] fatal: {e}\n{traceback.format_exc()}")
-        await bot.send_message(
-            user_id,
-            f"⚠️ *OTP auto-detection failed.*\n\n"
-            f"📱 Phone: `{phone}`\n\n"
-            f"Please request the OTP manually and contact support if needed.",
-            parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("🆘 Support", url=f"https://t.me/{SUPPORT_USERNAME}")]
-            ])
-        )
-
-
 # ── BUY FLOW ──────────────────────────────────────────────────────────────────
 async def buy_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -625,37 +504,129 @@ async def confirm_buy(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     phone = acc.get("phone", "").strip()
 
-    # ── Send phone number to buyer immediately ────────────────────────────────
-    await ctx.bot.send_message(
-        user_id,
-        f"📱 *Your Account Phone Number:*\n\n"
-        f"`{phone}`\n\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"*How to login:*\n"
-        f"1️⃣ Open Telegram on any device\n"
-        f"2️⃣ Enter the phone number above\n"
-        f"3️⃣ Telegram will send an OTP to this account\n"
-        f"4️⃣ I will automatically forward the OTP to you here ⬇️\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"⏳ *Waiting for OTP... (up to 5 minutes)*",
-        parse_mode="Markdown"
-    )
+    # ── OTP flow ──────────────────────────────────────────────────────────────
+    # Strategy:
+    #   1. Connect with the EXISTING session (the account being sold).
+    #   2. Record the latest message ID from Telegram service (777000) BEFORE
+    #      triggering the OTP, so we only pick up the NEW message.
+    #   3. Use a SEPARATE anonymous client to call send_code_request, which
+    #      causes Telegram to deliver the OTP to the session account's inbox.
+    #   4. Poll the session client for a message from 777000 that is newer
+    #      than the recorded ID and contains a 5-6 digit code.
+    #   5. Forward the code to the buyer.
+    try:
+        import re
+        import asyncio
+        from telethon import TelegramClient
+        from telethon.sessions import StringSession
+        from telethon.tl.functions.messages import GetHistoryRequest
 
-    # ── Launch OTP watcher as a background task on the shared event loop ─────
-    # Must NOT await — the webhook has no timeout now but we still want this
-    # running independently so it doesn't block other updates.
-    # Use the same loop the webhook runs on (stored in flask_app.config).
-    import asyncio
-    bg_loop = flask_app.config.get("ASYNCIO_LOOP")
-    if bg_loop:
-        asyncio.run_coroutine_threadsafe(
-            _watch_for_otp(ctx.bot, user_id, acc["session"], phone, acc_id),
-            bg_loop
-        )
-    else:
-        # Fallback: schedule on current loop
-        asyncio.get_event_loop().create_task(
-            _watch_for_otp(ctx.bot, user_id, acc["session"], phone, acc_id)
+        # ── Step 1: connect with the sold account's session ──────────────────
+        session_client = TelegramClient(StringSession(acc["session"]), API_ID, API_HASH)
+        await session_client.connect()
+
+        # ── Step 2: record the time just before triggering OTP ───────────────
+        from datetime import datetime, timezone
+        otp_trigger_time = datetime.now(timezone.utc)
+
+        # ── Step 3: trigger OTP using a fresh anonymous client ───────────────
+        anon_client = TelegramClient(StringSession(), API_ID, API_HASH)
+        await anon_client.connect()
+        try:
+            await anon_client.send_code_request(phone)
+        except Exception as trigger_err:
+            logger.warning(f"OTP trigger warning (may be normal): {trigger_err}")
+        finally:
+            await anon_client.disconnect()
+
+        # ── Step 4: poll session client for the new OTP message ──────────────
+        otp_code = None
+        service_peer = await session_client.get_input_entity(777000)
+        deadline = asyncio.get_event_loop().time() + 60  # wait up to 60 s
+
+        while asyncio.get_event_loop().time() < deadline:
+            await asyncio.sleep(3)
+            try:
+                history = await session_client(GetHistoryRequest(
+                    peer=service_peer,
+                    limit=5,
+                    offset_date=None, offset_id=0,
+                    max_id=0, min_id=0, add_offset=0, hash=0
+                ))
+                for msg in history.messages:
+                    # Only accept messages that arrived AFTER we triggered the OTP
+                    # (within 40 seconds = fresh OTP, not an old one)
+                    msg_time = msg.date  # already a timezone-aware datetime
+                    age_seconds = (datetime.now(timezone.utc) - msg_time).total_seconds()
+                    if age_seconds > 40:
+                        continue
+                    text = getattr(msg, "message", "") or ""
+                    match = re.search(r'\b(\d{5,6})\b', text)
+                    if match:
+                        otp_code = match.group(1)
+                        break
+            except Exception as poll_err:
+                logger.warning(f"OTP poll error: {poll_err}")
+            if otp_code:
+                break
+
+        await session_client.disconnect()
+
+        # ── Step 5: send result to buyer ─────────────────────────────────────
+        if otp_code:
+            await ctx.bot.send_message(
+                user_id,
+                f"✅ *Your Account is Ready!*\n\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"📱 *Phone Number:*\n`{phone}`\n\n"
+                f"🔐 *Login OTP:*\n`{otp_code}`\n\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"*How to login:*\n"
+                f"1️⃣ Open Telegram on any device\n"
+                f"2️⃣ Enter the phone number above\n"
+                f"3️⃣ Enter the OTP code above\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"⚠️ OTP expires in a few minutes.\n"
+                f"⚠️ Do *not* share these details.",
+                parse_mode="Markdown"
+            )
+        else:
+            # OTP didn't arrive in time — send phone + instructions
+            await ctx.bot.send_message(
+                user_id,
+                f"✅ *Your Account is Ready!*\n\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"📱 *Phone Number:*\n`{phone}`\n\n"
+                f"📩 An OTP has been sent to this number.\n\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"*How to login:*\n"
+                f"1️⃣ Open Telegram on any device\n"
+                f"2️⃣ Enter the phone number above\n"
+                f"3️⃣ Enter the OTP you received\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"⚠️ Do *not* share these details.",
+                parse_mode="Markdown"
+            )
+
+    except Exception as e:
+        logger.error(f"OTP send failed for account #{acc_id}: {e}\n{traceback.format_exc()}")
+        await ctx.bot.send_message(
+            user_id,
+            f"✅ *Your Account is Ready!*\n\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"📱 *Phone Number:*\n`{phone}`\n\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"*How to login:*\n"
+            f"1️⃣ Open Telegram on any device\n"
+            f"2️⃣ Enter the phone number above\n"
+            f"3️⃣ Request OTP — it will arrive via SMS\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"⚠️ Do *not* share these details.\n\n"
+            f"Need help? Contact 🆘 Support.",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🆘 Support", url=f"https://t.me/{SUPPORT_USERNAME}")]
+            ])
         )
 
     # Notify admin
@@ -752,7 +723,6 @@ def build_app() -> Application:
     app.add_handler(CommandHandler("start",    start))
     app.add_handler(deposit_conv)
     app.add_handler(login_conv)
-    app.add_error_handler(error_handler)
     app.add_handler(CommandHandler("accounts", admin_accounts))
     app.add_handler(CommandHandler("users",    admin_users))
     app.add_handler(CommandHandler("pending",  admin_pending))
@@ -776,29 +746,25 @@ def main():
     init_db()
     ptb_app = build_app()
 
-    import asyncio
-    import threading
-
-    loop = asyncio.new_event_loop()
-
     @flask_app.get("/")
     def health():
         return Response("OK", status=200)
 
     @flask_app.post(f"/webhook/{BOT_TOKEN}")
     def webhook():
+        import asyncio
         data   = request.get_json(force=True)
-        logger.info(f"Webhook received update: {data.get('update_id')} type={list(data.keys())}")
         update = Update.de_json(data, ptb_app.bot)
-        # Fire-and-forget: do NOT block waiting for the result.
-        # Blocking with future.result() causes timeouts when handlers
-        # take more than 30s (e.g. OTP watcher), which makes Telegram
-        # retry the update and floods the bot.
-        asyncio.run_coroutine_threadsafe(ptb_app.process_update(update), loop)
+        future = asyncio.run_coroutine_threadsafe(
+            ptb_app.process_update(update), loop
+        )
+        future.result(timeout=30)   # wait up to 30s, raises on error
         return Response("ok", status=200)
 
-    # Store loop on app so handlers can schedule background tasks on it
-    flask_app.config["ASYNCIO_LOOP"] = loop
+    import asyncio
+    import threading
+
+    loop = asyncio.new_event_loop()
 
     async def setup():
         await ptb_app.initialize()
