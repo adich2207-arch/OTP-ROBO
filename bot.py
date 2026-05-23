@@ -1,10 +1,12 @@
 import os
 import logging
-import psycopg2
-import psycopg2.extras
+import traceback
+import psycopg
+from psycopg.rows import dict_row
 from dotenv import load_dotenv
 load_dotenv()
 
+from flask import Flask, request, Response
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application, CommandHandler, CallbackQueryHandler,
@@ -13,6 +15,8 @@ from telegram.ext import (
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+flask_app = Flask(__name__)
 
 # ── Config ────────────────────────────────────────────────────────────────────
 BOT_TOKEN        = os.getenv("BOT_TOKEN")
@@ -23,231 +27,131 @@ WEBHOOK_URL      = os.getenv("WEBHOOK_URL", "")
 PORT             = int(os.getenv("PORT", "8080"))
 API_ID           = int(os.getenv("API_ID", "0"))
 API_HASH         = os.getenv("API_HASH", "")
-
-REFERRAL_COMMISSION = 0.02  # 2%
+REFERRAL_COMMISSION = 0.02
 
 ptb_app: Application = None
 
-# ── States ────────────────────────────────────────────────────────────────────
-(
-    DEPOSIT_AMOUNT,
-    ADMIN_PHONE,
-    ADMIN_OTP,
-    ADMIN_ADD_PRICE,
-) = range(4)
+(DEPOSIT_AMOUNT, ADMIN_PHONE, ADMIN_OTP, ADMIN_ADD_PRICE) = range(4)
 
 # ── Database ──────────────────────────────────────────────────────────────────
 def get_db():
-    conn = psycopg2.connect(DATABASE_URL, cursor_factory=psycopg2.extras.RealDictCursor)
-    conn.autocommit = True
-    return conn
+    return psycopg.connect(DATABASE_URL, row_factory=dict_row)
 
 def init_db():
-    conn = get_db()
-    try:
-        cur = conn.cursor()
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS users (
-                user_id     BIGINT PRIMARY KEY,
-                username    TEXT    DEFAULT '',
-                balance     NUMERIC(12,2) DEFAULT 0,
-                referred_by BIGINT  DEFAULT NULL,
-                created_at  TIMESTAMPTZ DEFAULT NOW()
-            )
-        """)
-        cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS referred_by BIGINT DEFAULT NULL")
-        cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS username TEXT DEFAULT ''")
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS deposits (
-                id         BIGSERIAL PRIMARY KEY,
-                user_id    BIGINT,
-                amount     NUMERIC(12,2),
-                status     TEXT DEFAULT 'pending',
-                created_at TIMESTAMPTZ DEFAULT NOW()
-            )
-        """)
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS accounts (
-                id         BIGSERIAL PRIMARY KEY,
-                session    TEXT,
-                price      NUMERIC(12,2),
-                status     TEXT DEFAULT 'available',
-                buyer_id   BIGINT DEFAULT NULL,
-                created_at TIMESTAMPTZ DEFAULT NOW()
-            )
-        """)
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS referral_earnings (
-                id          BIGSERIAL PRIMARY KEY,
-                referrer_id BIGINT,
-                referred_id BIGINT,
-                deposit_id  BIGINT,
-                commission  NUMERIC(12,2),
-                created_at  TIMESTAMPTZ DEFAULT NOW()
-            )
-        """)
-        cur.close()
-    finally:
-        conn.close()
+    with get_db() as conn:
+        conn.execute("""CREATE TABLE IF NOT EXISTS users (
+            user_id BIGINT PRIMARY KEY, username TEXT DEFAULT '',
+            balance NUMERIC(12,2) DEFAULT 0, referred_by BIGINT DEFAULT NULL,
+            created_at TIMESTAMPTZ DEFAULT NOW())""")
+        conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS referred_by BIGINT DEFAULT NULL")
+        conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS username TEXT DEFAULT ''")
+        conn.execute("""CREATE TABLE IF NOT EXISTS deposits (
+            id BIGSERIAL PRIMARY KEY, user_id BIGINT, amount NUMERIC(12,2),
+            status TEXT DEFAULT 'pending', created_at TIMESTAMPTZ DEFAULT NOW())""")
+        conn.execute("""CREATE TABLE IF NOT EXISTS accounts (
+            id BIGSERIAL PRIMARY KEY, session TEXT, price NUMERIC(12,2),
+            status TEXT DEFAULT 'available', buyer_id BIGINT DEFAULT NULL,
+            created_at TIMESTAMPTZ DEFAULT NOW())""")
+        conn.execute("""CREATE TABLE IF NOT EXISTS referral_earnings (
+            id BIGSERIAL PRIMARY KEY, referrer_id BIGINT, referred_id BIGINT,
+            deposit_id BIGINT, commission NUMERIC(12,2),
+            created_at TIMESTAMPTZ DEFAULT NOW())""")
     logger.info("✅ Database initialised.")
-
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 def ensure_user(user_id: int, username: str = "", referred_by: int = None):
-    conn = get_db()
-    try:
-        cur = conn.cursor()
-        cur.execute("SELECT user_id FROM users WHERE user_id=%s", (user_id,))
-        existing = cur.fetchone()
-        if not existing:
-            cur.execute(
+    with get_db() as conn:
+        if not conn.execute("SELECT 1 FROM users WHERE user_id=%s", (user_id,)).fetchone():
+            conn.execute(
                 "INSERT INTO users (user_id, username, referred_by) VALUES (%s,%s,%s)",
                 (user_id, username or "", referred_by)
             )
-        cur.close()
-    finally:
-        conn.close()
 
 def get_balance(user_id: int) -> float:
-    conn = get_db()
-    try:
-        cur = conn.cursor()
-        cur.execute("SELECT balance FROM users WHERE user_id=%s", (user_id,))
-        row = cur.fetchone()
-        cur.close()
+    with get_db() as conn:
+        row = conn.execute("SELECT balance FROM users WHERE user_id=%s", (user_id,)).fetchone()
         return float(row["balance"]) if row else 0.0
-    finally:
-        conn.close()
 
 def get_referral_count(user_id: int) -> int:
-    conn = get_db()
-    try:
-        cur = conn.cursor()
-        cur.execute("SELECT COUNT(*) AS cnt FROM users WHERE referred_by=%s", (user_id,))
-        row = cur.fetchone()
-        cur.close()
+    with get_db() as conn:
+        row = conn.execute("SELECT COUNT(*) AS cnt FROM users WHERE referred_by=%s", (user_id,)).fetchone()
         return row["cnt"] if row else 0
-    finally:
-        conn.close()
 
 def get_referral_earnings(user_id: int) -> float:
-    conn = get_db()
-    try:
-        cur = conn.cursor()
-        cur.execute(
+    with get_db() as conn:
+        row = conn.execute(
             "SELECT COALESCE(SUM(commission),0) AS total FROM referral_earnings WHERE referrer_id=%s",
             (user_id,)
-        )
-        row = cur.fetchone()
-        cur.close()
+        ).fetchone()
         return float(row["total"]) if row else 0.0
-    finally:
-        conn.close()
 
 # ── Keyboards ─────────────────────────────────────────────────────────────────
 def main_menu_keyboard():
     return InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton("💰 Deposit",      callback_data="menu_deposit"),
-            InlineKeyboardButton("💸 Withdraw",     callback_data="menu_withdraw"),
-        ],
-        [
-            InlineKeyboardButton("🛒 Buy Account",  callback_data="menu_buy"),
-            InlineKeyboardButton("📊 My Wallet",    callback_data="menu_balance"),
-        ],
-        [
-            InlineKeyboardButton("👥 Refer & Earn", callback_data="menu_refer"),
-            InlineKeyboardButton("🆘 Support",      url=f"https://t.me/{SUPPORT_USERNAME}"),
-        ],
+        [InlineKeyboardButton("💰 Deposit",      callback_data="menu_deposit"),
+         InlineKeyboardButton("💸 Withdraw",     callback_data="menu_withdraw")],
+        [InlineKeyboardButton("🛒 Buy Account",  callback_data="menu_buy"),
+         InlineKeyboardButton("📊 My Wallet",    callback_data="menu_balance")],
+        [InlineKeyboardButton("👥 Refer & Earn", callback_data="menu_refer"),
+         InlineKeyboardButton("🆘 Support",      url=f"https://t.me/{SUPPORT_USERNAME}")],
     ])
 
 def back_keyboard():
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🔙 Back to Menu", callback_data="menu_back")]
-    ])
+    return InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back to Menu", callback_data="menu_back")]])
+
 
 # ── /start ────────────────────────────────────────────────────────────────────
 async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
-
     referred_by = None
-    if ctx.args:
-        arg = ctx.args[0]
-        if arg.startswith("ref_"):
-            try:
-                ref_id = int(arg.split("_")[1])
-                if ref_id != user.id:
-                    referred_by = ref_id
-            except (IndexError, ValueError):
-                pass
-
+    if ctx.args and ctx.args[0].startswith("ref_"):
+        try:
+            ref_id = int(ctx.args[0].split("_")[1])
+            if ref_id != user.id:
+                referred_by = ref_id
+        except (IndexError, ValueError):
+            pass
     ensure_user(user.id, user.username or "", referred_by)
-
     if referred_by:
         try:
-            await ctx.bot.send_message(
-                referred_by,
-                f"🎉 *New Referral!*\n\n"
-                f"@{user.username or user.first_name} just joined using your link!\n"
+            await ctx.bot.send_message(referred_by,
+                f"🎉 *New Referral!*\n\n@{user.username or user.first_name} just joined!\n"
                 f"You'll earn *{int(REFERRAL_COMMISSION*100)}%* on their deposits.",
-                parse_mode="Markdown"
-            )
+                parse_mode="Markdown")
         except Exception:
             pass
-
     await update.message.reply_text(
-        f"╔══════════════════════╗\n"
-        f"      🏪 *TG MARKET*\n"
-        f"╚══════════════════════╝\n\n"
+        f"╔══════════════════════╗\n      🏪 *TG MARKET*\n╚══════════════════════╝\n\n"
         f"👋 Welcome, *{user.first_name}*!\n\n"
-        f"The #1 marketplace to buy\n"
-        f"Telegram accounts safely using USD.\n\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"💡 *How it works:*\n"
-        f"  • Deposit USD to your wallet\n"
-        f"  • Browse & buy Telegram accounts\n"
-        f"  • Receive session instantly after purchase\n"
-        f"  • Refer friends & earn 2% commission\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        f"Choose an option below 👇",
-        parse_mode="Markdown",
-        reply_markup=main_menu_keyboard()
-    )
+        f"The #1 marketplace to buy Telegram accounts safely using USD.\n\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n💡 *How it works:*\n"
+        f"  • Deposit USD to your wallet\n  • Browse & buy Telegram accounts\n"
+        f"  • Receive session instantly after purchase\n  • Refer friends & earn 2% commission\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n\nChoose an option below 👇",
+        parse_mode="Markdown", reply_markup=main_menu_keyboard())
 
 async def menu_back(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    user = query.from_user
     await query.edit_message_text(
-        f"🏪 *TG MARKET* — Main Menu\n\n"
-        f"💼 Balance: *${get_balance(user.id):.2f}*\n\n"
-        f"What would you like to do?",
-        parse_mode="Markdown",
-        reply_markup=main_menu_keyboard()
-    )
+        f"🏪 *TG MARKET* — Main Menu\n\n💼 Balance: *${get_balance(query.from_user.id):.2f}*\n\nWhat would you like to do?",
+        parse_mode="Markdown", reply_markup=main_menu_keyboard())
 
 async def cancel(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("❌ Action cancelled.", reply_markup=main_menu_keyboard())
     return ConversationHandler.END
 
-
-# ── DEPOSIT FLOW ──────────────────────────────────────────────────────────────
+# ── DEPOSIT ───────────────────────────────────────────────────────────────────
 async def deposit_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     await query.edit_message_text(
-        "╔══════════════════════╗\n"
-        "      💰 *DEPOSIT USD*\n"
-        "╚══════════════════════╝\n\n"
-        "Send the amount you wish to deposit.\n\n"
-        "📌 *Example:* `50`\n\n"
-        "━━━━━━━━━━━━━━━━━━━━━━\n"
-        "After submitting, the admin will verify\n"
-        "your payment and credit your balance.\n"
-        "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        "╔══════════════════════╗\n      💰 *DEPOSIT USD*\n╚══════════════════════╝\n\n"
+        "Send the amount you wish to deposit.\n\n📌 *Example:* `50`\n\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\nAfter submitting, the admin will verify\n"
+        "your payment and credit your balance.\n━━━━━━━━━━━━━━━━━━━━━━\n\n"
         "✏️ Enter amount or /cancel to go back:",
-        parse_mode="Markdown"
-    )
+        parse_mode="Markdown")
     return DEPOSIT_AMOUNT
 
 async def deposit_amount(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -258,120 +162,56 @@ async def deposit_amount(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if amount <= 0:
             raise ValueError
     except ValueError:
-        await update.message.reply_text(
-            "❌ *Invalid amount.*\nPlease enter a positive number like `25` or `100`.",
-            parse_mode="Markdown"
-        )
+        await update.message.reply_text("❌ *Invalid amount.* Enter a positive number like `25`.", parse_mode="Markdown")
         return DEPOSIT_AMOUNT
-
-    conn = get_db()
-    try:
-        cur = conn.cursor()
-        cur.execute(
+    with get_db() as conn:
+        dep_id = conn.execute(
             "INSERT INTO deposits (user_id, amount) VALUES (%s,%s) RETURNING id",
-            (user.id, amount)
-        )
-        row = cur.fetchone()
-        dep_id = row["id"]
-        cur.close()
-    finally:
-        conn.close()
-
-    await ctx.bot.send_message(
-        ADMIN_ID,
-        f"📥 *NEW DEPOSIT REQUEST*\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            (user.id, amount)).fetchone()["id"]
+    await ctx.bot.send_message(ADMIN_ID,
+        f"📥 *NEW DEPOSIT REQUEST*\n━━━━━━━━━━━━━━━━━━━━━━\n"
         f"👤 User: @{user.username or user.first_name} (`{user.id}`)\n"
-        f"💵 Amount: *${amount:.2f}*\n"
-        f"🆔 Deposit ID: `{dep_id}`\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"✅ Approve: /approve_{dep_id}\n"
-        f"❌ Reject:  /reject_{dep_id}\n"
-        f"💳 Manual:  /credit {user.id} {amount:.2f}",
-        parse_mode="Markdown"
-    )
+        f"💵 Amount: *${amount:.2f}*\n🆔 Deposit ID: `{dep_id}`\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n✅ /approve_{dep_id}\n❌ /reject_{dep_id}\n"
+        f"💳 /credit {user.id} {amount:.2f}", parse_mode="Markdown")
     await update.message.reply_text(
-        f"✅ *Deposit Request Submitted!*\n\n"
-        f"💵 Amount: *${amount:.2f}*\n"
-        f"🆔 Reference ID: `{dep_id}`\n\n"
-        f"⏳ The admin will verify your payment\n"
-        f"and credit your balance shortly.\n\n"
-        f"Need help? Tap 🆘 Support in the menu.",
-        parse_mode="Markdown",
-        reply_markup=main_menu_keyboard()
-    )
+        f"✅ *Deposit Request Submitted!*\n\n💵 Amount: *${amount:.2f}*\n🆔 Reference ID: `{dep_id}`\n\n"
+        f"⏳ Admin will verify and credit your balance shortly.",
+        parse_mode="Markdown", reply_markup=main_menu_keyboard())
     return ConversationHandler.END
 
-# ── Admin: approve / reject deposit ──────────────────────────────────────────
 async def admin_approve(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return
     try:
         dep_id = int(update.message.text.split("_")[1])
     except (IndexError, ValueError):
-        await update.message.reply_text("Usage: /approve_<id>")
-        return
-
-    conn = get_db()
-    try:
-        cur = conn.cursor()
-        cur.execute("SELECT * FROM deposits WHERE id=%s", (dep_id,))
-        dep = cur.fetchone()
+        await update.message.reply_text("Usage: /approve_<id>"); return
+    with get_db() as conn:
+        dep = conn.execute("SELECT * FROM deposits WHERE id=%s", (dep_id,)).fetchone()
         if not dep:
-            await update.message.reply_text("❌ Deposit not found.")
-            cur.close()
-            return
+            await update.message.reply_text("❌ Not found."); return
         if dep["status"] != "pending":
-            await update.message.reply_text("⚠️ Already processed.")
-            cur.close()
-            return
-        cur.execute("UPDATE deposits SET status='approved' WHERE id=%s", (dep_id,))
-        cur.execute(
-            "UPDATE users SET balance=balance+%s WHERE user_id=%s",
-            (dep["amount"], dep["user_id"])
-        )
-        # Referral commission
-        cur.execute("SELECT referred_by FROM users WHERE user_id=%s", (dep["user_id"],))
-        referrer = cur.fetchone()
+            await update.message.reply_text("⚠️ Already processed."); return
+        conn.execute("UPDATE deposits SET status='approved' WHERE id=%s", (dep_id,))
+        conn.execute("UPDATE users SET balance=balance+%s WHERE user_id=%s", (dep["amount"], dep["user_id"]))
+        referrer = conn.execute("SELECT referred_by FROM users WHERE user_id=%s", (dep["user_id"],)).fetchone()
         commission = 0.0
         if referrer and referrer["referred_by"]:
             commission = float(dep["amount"]) * REFERRAL_COMMISSION
-            cur.execute(
-                "UPDATE users SET balance=balance+%s WHERE user_id=%s",
-                (commission, referrer["referred_by"])
-            )
-            cur.execute(
-                "INSERT INTO referral_earnings (referrer_id,referred_id,deposit_id,commission) "
-                "VALUES (%s,%s,%s,%s)",
-                (referrer["referred_by"], dep["user_id"], dep_id, commission)
-            )
-        cur.close()
-    finally:
-        conn.close()
-
+            conn.execute("UPDATE users SET balance=balance+%s WHERE user_id=%s", (commission, referrer["referred_by"]))
+            conn.execute("INSERT INTO referral_earnings (referrer_id,referred_id,deposit_id,commission) VALUES (%s,%s,%s,%s)",
+                (referrer["referred_by"], dep["user_id"], dep_id, commission))
     await update.message.reply_text(
         f"✅ Deposit #{dep_id} approved! *${dep['amount']:.2f}* credited."
-        + (f"\n🤝 Referral commission *${commission:.2f}* paid." if commission else ""),
-        parse_mode="Markdown"
-    )
-    await ctx.bot.send_message(
-        dep["user_id"],
-        f"🎉 *Deposit Approved!*\n\n"
-        f"💵 *${dep['amount']:.2f}* has been added to your wallet.\n"
-        f"🆔 Reference: `{dep_id}`\n\n"
-        f"Your balance is ready — start shopping! 🛒",
-        parse_mode="Markdown",
-        reply_markup=main_menu_keyboard()
-    )
+        + (f"\n🤝 Referral *${commission:.2f}* paid." if commission else ""), parse_mode="Markdown")
+    await ctx.bot.send_message(dep["user_id"],
+        f"🎉 *Deposit Approved!*\n\n💵 *${dep['amount']:.2f}* added to your wallet.\n🆔 Ref: `{dep_id}`\n\nStart shopping! 🛒",
+        parse_mode="Markdown", reply_markup=main_menu_keyboard())
     if referrer and referrer["referred_by"] and commission > 0:
         try:
-            await ctx.bot.send_message(
-                referrer["referred_by"],
-                f"💰 *Referral Commission Earned!*\n\n"
-                f"Your referral just made a deposit.\n"
-                f"You earned *${commission:.2f}* ({int(REFERRAL_COMMISSION*100)}% commission)!",
-                parse_mode="Markdown"
-            )
+            await ctx.bot.send_message(referrer["referred_by"],
+                f"💰 *Referral Commission!*\nYou earned *${commission:.2f}*!", parse_mode="Markdown")
         except Exception:
             pass
 
@@ -381,206 +221,122 @@ async def admin_reject(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     try:
         dep_id = int(update.message.text.split("_")[1])
     except (IndexError, ValueError):
-        await update.message.reply_text("Usage: /reject_<id>")
-        return
-    conn = get_db()
-    try:
-        cur = conn.cursor()
-        cur.execute("SELECT * FROM deposits WHERE id=%s", (dep_id,))
-        dep = cur.fetchone()
+        await update.message.reply_text("Usage: /reject_<id>"); return
+    with get_db() as conn:
+        dep = conn.execute("SELECT * FROM deposits WHERE id=%s", (dep_id,)).fetchone()
         if not dep or dep["status"] != "pending":
-            await update.message.reply_text("❌ Not found or already processed.")
-            cur.close()
-            return
-        cur.execute("UPDATE deposits SET status='rejected' WHERE id=%s", (dep_id,))
-        cur.close()
-    finally:
-        conn.close()
+            await update.message.reply_text("❌ Not found or already processed."); return
+        conn.execute("UPDATE deposits SET status='rejected' WHERE id=%s", (dep_id,))
     await update.message.reply_text(f"❌ Deposit #{dep_id} rejected.")
-    await ctx.bot.send_message(
-        dep["user_id"],
-        f"❌ *Deposit Rejected*\n\n"
-        f"Your deposit of *${dep['amount']:.2f}* (ID: `{dep_id}`) was not approved.\n\n"
-        f"Contact 🆘 Support if you believe this is an error.",
-        parse_mode="Markdown",
-        reply_markup=main_menu_keyboard()
-    )
+    await ctx.bot.send_message(dep["user_id"],
+        f"❌ *Deposit Rejected*\n\nYour deposit of *${dep['amount']:.2f}* (ID: `{dep_id}`) was not approved.\nContact 🆘 Support if this is an error.",
+        parse_mode="Markdown", reply_markup=main_menu_keyboard())
 
-# ── Admin: manual credit / deduct ────────────────────────────────────────────
+# ── Admin: credit / deduct ────────────────────────────────────────────────────
 async def admin_credit(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return
     try:
-        parts   = update.message.text.strip().split()
+        parts = update.message.text.strip().split()
         user_id = int(parts[1])
         amount  = float(parts[2])
         if amount <= 0:
             raise ValueError
     except (IndexError, ValueError):
-        await update.message.reply_text(
-            "Usage: `/credit <user_id> <amount>`\nExample: `/credit 123456789 50`",
-            parse_mode="Markdown"
-        )
+        await update.message.reply_text("Usage: `/credit <user_id> <amount>`\nExample: `/credit 123456789 50`", parse_mode="Markdown")
         return
-
     ensure_user(user_id, "")
-    conn = get_db()
+    with get_db() as conn:
+        conn.execute("UPDATE users SET balance=balance+%s WHERE user_id=%s", (amount, user_id))
+        new_bal = float(conn.execute("SELECT balance FROM users WHERE user_id=%s", (user_id,)).fetchone()["balance"])
+    await update.message.reply_text(f"✅ *${amount:.2f} credited to `{user_id}`*\nNew balance: *${new_bal:.2f}*", parse_mode="Markdown")
     try:
-        cur = conn.cursor()
-        cur.execute("UPDATE users SET balance=balance+%s WHERE user_id=%s", (amount, user_id))
-        cur.execute("SELECT balance FROM users WHERE user_id=%s", (user_id,))
-        row = cur.fetchone()
-        new_bal = float(row["balance"]) if row else amount
-        cur.close()
-    finally:
-        conn.close()
-
-    await update.message.reply_text(
-        f"✅ *${amount:.2f} credited to `{user_id}`*\n"
-        f"New balance: *${new_bal:.2f}*",
-        parse_mode="Markdown"
-    )
-    try:
-        await ctx.bot.send_message(
-            user_id,
-            f"🎉 *${amount:.2f} added to your balance by admin!*\n\n"
-            f"New balance: *${new_bal:.2f}*\n\nStart shopping! 🛒",
-            parse_mode="Markdown",
-            reply_markup=main_menu_keyboard()
-        )
+        await ctx.bot.send_message(user_id,
+            f"🎉 *${amount:.2f} added to your balance by admin!*\n\nNew balance: *${new_bal:.2f}*\n\nStart shopping! 🛒",
+            parse_mode="Markdown", reply_markup=main_menu_keyboard())
     except Exception:
-        await update.message.reply_text("⚠️ Credited but could not notify user (they may not have started the bot).")
+        await update.message.reply_text("⚠️ Credited but could not notify user.")
 
 async def admin_deduct(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return
     try:
-        parts   = update.message.text.strip().split()
+        parts = update.message.text.strip().split()
         user_id = int(parts[1])
         amount  = float(parts[2])
         if amount <= 0:
             raise ValueError
     except (IndexError, ValueError):
-        await update.message.reply_text(
-            "Usage: `/deduct <user_id> <amount>`\nExample: `/deduct 123456789 10`",
-            parse_mode="Markdown"
-        )
+        await update.message.reply_text("Usage: `/deduct <user_id> <amount>`", parse_mode="Markdown")
         return
-
-    conn = get_db()
-    try:
-        cur = conn.cursor()
-        cur.execute("SELECT balance FROM users WHERE user_id=%s", (user_id,))
-        bal = cur.fetchone()
+    with get_db() as conn:
+        bal = conn.execute("SELECT balance FROM users WHERE user_id=%s", (user_id,)).fetchone()
         if not bal or float(bal["balance"]) < amount:
-            await update.message.reply_text("❌ User not found or insufficient balance.")
-            cur.close()
-            return
-        cur.execute("UPDATE users SET balance=balance-%s WHERE user_id=%s", (amount, user_id))
-        cur.execute("SELECT balance FROM users WHERE user_id=%s", (user_id,))
-        new_bal = float(cur.fetchone()["balance"])
-        cur.close()
-    finally:
-        conn.close()
-
-    await update.message.reply_text(
-        f"✅ *${amount:.2f} deducted from `{user_id}`*\n"
-        f"New balance: *${new_bal:.2f}*",
-        parse_mode="Markdown"
-    )
+            await update.message.reply_text("❌ User not found or insufficient balance."); return
+        conn.execute("UPDATE users SET balance=balance-%s WHERE user_id=%s", (amount, user_id))
+        new_bal = float(conn.execute("SELECT balance FROM users WHERE user_id=%s", (user_id,)).fetchone()["balance"])
+    await update.message.reply_text(f"✅ *${amount:.2f} deducted from `{user_id}`*\nNew balance: *${new_bal:.2f}*", parse_mode="Markdown")
 
 
-# ── Admin: login account via OTP ──────────────────────────────────────────────
+# ── Admin: login via OTP ──────────────────────────────────────────────────────
 async def admin_login(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         await update.message.reply_text("❌ Not authorised.")
         return ConversationHandler.END
     await update.message.reply_text(
-        "╔══════════════════════╗\n"
-        "    📱 *LOGIN ACCOUNT*\n"
-        "╚══════════════════════╝\n\n"
-        "Send the phone number with country code.\n\n"
-        "📌 Example: `+12345678900`\n\n"
-        "/cancel to abort.",
-        parse_mode="Markdown"
-    )
+        "╔══════════════════════╗\n    📱 *LOGIN ACCOUNT*\n╚══════════════════════╝\n\n"
+        "Send the phone number with country code.\n\n📌 Example: `+12345678900`\n\n/cancel to abort.",
+        parse_mode="Markdown")
     return ADMIN_PHONE
 
 async def get_phone(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     phone = update.message.text.strip()
     ctx.user_data["phone"] = phone
     await update.message.reply_text("⏳ Sending OTP...")
-
-    # Validate API credentials before attempting connection
     if not API_ID or not API_HASH:
         await update.message.reply_text(
-            "❌ *Configuration Error*\n\n"
-            "`API_ID` or `API_HASH` is not set.\n\n"
-            "Please add them to your Render environment variables.",
-            parse_mode="Markdown"
-        )
+            "❌ *Configuration Error*\n\n`API_ID` or `API_HASH` not set in Render env vars.",
+            parse_mode="Markdown")
         return ConversationHandler.END
-
     try:
-        import traceback
         from pyrofork import Client
-        client = Client(
-            name=":memory:",
-            api_id=API_ID,
-            api_hash=API_HASH,
-            in_memory=True
-        )
+        client = Client(name=":memory:", api_id=API_ID, api_hash=API_HASH, in_memory=True)
         await client.connect()
         sent = await client.send_code(phone)
         ctx.user_data["client"] = client
         ctx.user_data["phone_code_hash"] = sent.phone_code_hash
         await update.message.reply_text(
-            "📩 *OTP sent!*\n\nEnter the OTP you received:\n\n"
-            "_(Enter digits only, e.g. `12345`)_",
-            parse_mode="Markdown"
-        )
+            "📩 *OTP sent!*\n\nEnter the OTP you received _(digits only, e.g. `12345`)_:",
+            parse_mode="Markdown")
         return ADMIN_OTP
     except Exception as e:
-        tb = traceback.format_exc()
-        logger.error(f"OTP send failed for {phone}:\n{tb}")
+        logger.error(f"OTP error: {traceback.format_exc()}")
         await update.message.reply_text(
-            f"❌ *Failed to send OTP*\n\n"
-            f"*Error:* `{type(e).__name__}: {e}`\n\n"
-            f"*Debug info:*\n"
+            f"❌ *Failed to send OTP*\n\n`{type(e).__name__}: {e}`\n\n"
             f"• API\\_ID set: `{'Yes' if API_ID else 'No'}`\n"
-            f"• API\\_HASH set: `{'Yes' if API_HASH else 'No'}`\n"
-            f"• Phone: `{phone}`\n\n"
-            f"Make sure API\\_ID and API\\_HASH are set correctly in Render env vars.",
-            parse_mode="Markdown"
-        )
+            f"• API\\_HASH set: `{'Yes' if API_HASH else 'No'}`",
+            parse_mode="Markdown")
         return ConversationHandler.END
 
 async def get_otp(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    otp        = update.message.text.strip().replace(" ", "")
-    client     = ctx.user_data.get("client")
-    phone      = ctx.user_data.get("phone")
-    code_hash  = ctx.user_data.get("phone_code_hash")
-
+    otp       = update.message.text.strip().replace(" ", "")
+    client    = ctx.user_data.get("client")
+    phone     = ctx.user_data.get("phone")
+    code_hash = ctx.user_data.get("phone_code_hash")
     if not client:
         await update.message.reply_text("❌ Session expired. Run /login_account again.")
         return ConversationHandler.END
-
     try:
         await client.sign_in(phone, code_hash, otp)
         session = await client.export_session_string()
         await client.disconnect()
         ctx.user_data["session"] = session
         await update.message.reply_text(
-            "✅ *Login successful!*\n\n"
-            "💵 Now enter the price for this account (e.g. `25`):",
-            parse_mode="Markdown"
-        )
+            "✅ *Login successful!*\n\n💵 Now enter the price for this account (e.g. `25`):",
+            parse_mode="Markdown")
         return ADMIN_ADD_PRICE
     except Exception as e:
-        await update.message.reply_text(
-            f"❌ *Login failed*\n\n`{e}`\n\nRun /login\\_account to try again.",
-            parse_mode="Markdown"
-        )
+        await update.message.reply_text(f"❌ *Login failed*\n\n`{e}`\n\nRun /login\\_account to try again.", parse_mode="Markdown")
         return ConversationHandler.END
 
 async def set_price(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -591,63 +347,36 @@ async def set_price(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     except ValueError:
         await update.message.reply_text("❌ Enter a valid positive price.")
         return ADMIN_ADD_PRICE
-
-    conn = get_db()
-    try:
-        cur = conn.cursor()
-        cur.execute(
+    with get_db() as conn:
+        acc_id = conn.execute(
             "INSERT INTO accounts (session, price) VALUES (%s,%s) RETURNING id",
-            (ctx.user_data["session"], price)
-        )
-        row = cur.fetchone()
-        cur.close()
-    finally:
-        conn.close()
-
+            (ctx.user_data["session"], price)).fetchone()["id"]
     await update.message.reply_text(
-        f"🎉 *Account #{row['id']} Added!*\n\n"
-        f"💵 Price: *${price:.2f}*\n"
-        f"🟢 Now visible in the marketplace.",
-        parse_mode="Markdown"
-    )
+        f"🎉 *Account #{acc_id} Added!*\n\n💵 Price: *${price:.2f}*\n🟢 Now visible in the marketplace.",
+        parse_mode="Markdown")
     return ConversationHandler.END
 
-# ── Admin: view accounts / users / pending ────────────────────────────────────
+# ── Admin: view commands ──────────────────────────────────────────────────────
 async def admin_accounts(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return
-    conn = get_db()
-    try:
-        cur = conn.cursor()
-        cur.execute("SELECT id, price, status, buyer_id FROM accounts ORDER BY id DESC")
-        rows = cur.fetchall()
-        cur.close()
-    finally:
-        conn.close()
+    with get_db() as conn:
+        rows = conn.execute("SELECT id, price, status, buyer_id FROM accounts ORDER BY id DESC").fetchall()
     if not rows:
-        await update.message.reply_text("📦 No accounts in the store yet.")
-        return
+        await update.message.reply_text("📦 No accounts yet."); return
     icons = {"available": "🟢", "sold": "✅"}
-    lines = [f"📦 *All Accounts* ({len(rows)} total)\n━━━━━━━━━━━━━━━━━━━━━━"]
+    lines = [f"📦 *All Accounts* ({len(rows)})\n━━━━━━━━━━━━━━━━━━━━━━"]
     for r in rows:
-        lines.append(
-            f"{icons.get(r['status'],'⚪')} #{r['id']} — *${r['price']:.2f}* ({r['status']})"
-            + (f" → `{r['buyer_id']}`" if r["buyer_id"] else "")
-        )
+        lines.append(f"{icons.get(r['status'],'⚪')} #{r['id']} — *${r['price']:.2f}* ({r['status']})"
+            + (f" → `{r['buyer_id']}`" if r["buyer_id"] else ""))
     await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
 async def admin_users(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return
-    conn = get_db()
-    try:
-        cur = conn.cursor()
-        cur.execute("SELECT * FROM users ORDER BY created_at DESC")
-        users = cur.fetchall()
-        cur.close()
-    finally:
-        conn.close()
-    lines = [f"👥 *All Users* ({len(users)} total)\n━━━━━━━━━━━━━━━━━━━━━━"]
+    with get_db() as conn:
+        users = conn.execute("SELECT * FROM users ORDER BY created_at DESC").fetchall()
+    lines = [f"👥 *All Users* ({len(users)})\n━━━━━━━━━━━━━━━━━━━━━━"]
     for u in users:
         lines.append(f"• @{u['username'] or 'N/A'} (`{u['user_id']}`) — *${u['balance']:.2f}*")
     await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
@@ -655,26 +384,16 @@ async def admin_users(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def admin_pending(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return
-    conn = get_db()
-    try:
-        cur = conn.cursor()
-        cur.execute(
-            "SELECT d.*, u.username FROM deposits d "
-            "JOIN users u ON d.user_id=u.user_id WHERE d.status='pending'"
-        )
-        deps = cur.fetchall()
-        cur.close()
-    finally:
-        conn.close()
+    with get_db() as conn:
+        deps = conn.execute(
+            "SELECT d.*, u.username FROM deposits d JOIN users u ON d.user_id=u.user_id WHERE d.status='pending'"
+        ).fetchall()
     if not deps:
-        await update.message.reply_text("✅ No pending deposits.")
-        return
+        await update.message.reply_text("✅ No pending deposits."); return
     lines = [f"📥 *Pending Deposits* ({len(deps)})\n━━━━━━━━━━━━━━━━━━━━━━"]
     for d in deps:
-        lines.append(
-            f"🆔 `{d['id']}` — @{d['username'] or d['user_id']} — *${d['amount']:.2f}*\n"
-            f"   ✅ /approve_{d['id']}   ❌ /reject_{d['id']}"
-        )
+        lines.append(f"🆔 `{d['id']}` — @{d['username'] or d['user_id']} — *${d['amount']:.2f}*\n"
+            f"   ✅ /approve_{d['id']}   ❌ /reject_{d['id']}")
     await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
 async def admin_delete(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -683,282 +402,137 @@ async def admin_delete(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     try:
         acc_id = int(update.message.text.split("_")[1])
     except (IndexError, ValueError):
-        await update.message.reply_text("Usage: /del_<id>")
-        return
-    conn = get_db()
-    try:
-        cur = conn.cursor()
-        cur.execute("DELETE FROM accounts WHERE id=%s", (acc_id,))
-        cur.close()
-    finally:
-        conn.close()
+        await update.message.reply_text("Usage: /del_<id>"); return
+    with get_db() as conn:
+        conn.execute("DELETE FROM accounts WHERE id=%s", (acc_id,))
     await update.message.reply_text(f"🗑 Account #{acc_id} deleted.")
-
 
 # ── BUY FLOW ──────────────────────────────────────────────────────────────────
 async def buy_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-
-    conn = get_db()
-    try:
-        cur = conn.cursor()
-        cur.execute("SELECT id, price FROM accounts WHERE status='available' ORDER BY price ASC")
-        accounts = cur.fetchall()
-        cur.close()
-    finally:
-        conn.close()
-
+    with get_db() as conn:
+        accounts = conn.execute("SELECT id, price FROM accounts WHERE status='available' ORDER BY price ASC").fetchall()
     if not accounts:
         await query.edit_message_text(
-            "╔══════════════════════╗\n"
-            "     🛒 *MARKETPLACE*\n"
-            "╚══════════════════════╝\n\n"
-            "😔 No accounts available right now.\n\n"
-            "Check back soon — new accounts are\n"
-            "added regularly!",
-            parse_mode="Markdown",
-            reply_markup=back_keyboard()
-        )
-        return
-
-    buttons = [
-        [InlineKeyboardButton(
-            f"🔑 Account #{a['id']}  —  ${a['price']:.2f}",
-            callback_data=f"view_{a['id']}"
-        )]
-        for a in accounts
-    ]
+            "╔══════════════════════╗\n     🛒 *MARKETPLACE*\n╚══════════════════════╝\n\n"
+            "😔 No accounts available right now.\nCheck back soon!",
+            parse_mode="Markdown", reply_markup=back_keyboard()); return
+    buttons = [[InlineKeyboardButton(f"🔑 Account #{a['id']}  —  ${a['price']:.2f}", callback_data=f"view_{a['id']}")] for a in accounts]
     buttons.append([InlineKeyboardButton("🔙 Back to Menu", callback_data="menu_back")])
-
     await query.edit_message_text(
-        f"╔══════════════════════╗\n"
-        f"     🛒 *MARKETPLACE*\n"
-        f"╚══════════════════════╝\n\n"
-        f"📦 *{len(accounts)} account(s) available*\n\n"
-        f"Tap any listing to view details:",
-        parse_mode="Markdown",
-        reply_markup=InlineKeyboardMarkup(buttons)
-    )
+        f"╔══════════════════════╗\n     🛒 *MARKETPLACE*\n╚══════════════════════╝\n\n"
+        f"📦 *{len(accounts)} account(s) available*\n\nTap any listing to view details:",
+        parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(buttons))
 
 async def view_account(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    query   = update.callback_query
+    query = update.callback_query
     await query.answer()
     acc_id  = int(query.data.split("_")[1])
     user_id = query.from_user.id
     ensure_user(user_id, query.from_user.username or "")
-
-    conn = get_db()
-    try:
-        cur = conn.cursor()
-        cur.execute(
-            "SELECT id, price FROM accounts WHERE id=%s AND status='available'", (acc_id,)
-        )
-        acc = cur.fetchone()
-        cur.close()
-    finally:
-        conn.close()
-
+    with get_db() as conn:
+        acc = conn.execute("SELECT id, price FROM accounts WHERE id=%s AND status='available'", (acc_id,)).fetchone()
     if not acc:
-        await query.edit_message_text(
-            "❌ This account is no longer available.",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("🛒 Browse Others", callback_data="menu_buy")]
-            ])
-        )
-        return
-
-    balance   = get_balance(user_id)
+        await query.edit_message_text("❌ No longer available.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🛒 Browse Others", callback_data="menu_buy")]])); return
+    balance = get_balance(user_id)
     has_funds = balance >= float(acc["price"])
-
     await query.edit_message_text(
-        f"╔══════════════════════╗\n"
-        f"    🔑 *ACCOUNT DETAILS*\n"
-        f"╚══════════════════════╝\n\n"
-        f"🆔 Account ID:  *#{acc['id']}*\n"
-        f"💵 Price:       *${acc['price']:.2f}*\n\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"💼 Your Balance: *${balance:.2f}*\n"
+        f"╔══════════════════════╗\n    🔑 *ACCOUNT DETAILS*\n╚══════════════════════╝\n\n"
+        f"🆔 Account ID:  *#{acc['id']}*\n💵 Price:       *${acc['price']:.2f}*\n\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n💼 Your Balance: *${balance:.2f}*\n"
         f"{'✅ You have enough funds.' if has_funds else '❌ Insufficient balance — deposit first.'}\n"
         f"━━━━━━━━━━━━━━━━━━━━━━",
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("✅ Buy Now", callback_data=f"confirm_{acc_id}")],
-            [InlineKeyboardButton("🔙 Back",    callback_data="menu_buy")],
-        ])
-    )
+            [InlineKeyboardButton("🔙 Back",    callback_data="menu_buy")]]))
 
 async def confirm_buy(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    query   = update.callback_query
+    query = update.callback_query
     await query.answer()
     acc_id  = int(query.data.split("_")[1])
     user_id = query.from_user.id
     ensure_user(user_id, query.from_user.username or "")
-
-    conn = get_db()
-    try:
-        cur = conn.cursor()
-        cur.execute(
-            "SELECT * FROM accounts WHERE id=%s AND status='available'", (acc_id,)
-        )
-        acc = cur.fetchone()
-
+    with get_db() as conn:
+        acc = conn.execute("SELECT * FROM accounts WHERE id=%s AND status='available'", (acc_id,)).fetchone()
         if not acc:
-            await query.edit_message_text("❌ Account no longer available.")
-            cur.close()
-            return
-
+            await query.edit_message_text("❌ Account no longer available."); return
         balance = get_balance(user_id)
         if balance < float(acc["price"]):
             await query.edit_message_text(
-                f"❌ *Insufficient Balance*\n\n"
-                f"💼 Your balance:  *${balance:.2f}*\n"
-                f"💵 Required:      *${acc['price']:.2f}*\n\n"
-                f"Please deposit funds first.",
+                f"❌ *Insufficient Balance*\n\n💼 Your balance: *${balance:.2f}*\n💵 Required: *${acc['price']:.2f}*",
                 parse_mode="Markdown",
                 reply_markup=InlineKeyboardMarkup([
                     [InlineKeyboardButton("💰 Deposit Now", callback_data="menu_deposit")],
-                    [InlineKeyboardButton("🔙 Back",        callback_data="menu_back")],
-                ])
-            )
-            cur.close()
-            return
-
-        cur.execute(
-            "UPDATE users SET balance=balance-%s WHERE user_id=%s",
-            (acc["price"], user_id)
-        )
-        cur.execute(
-            "UPDATE accounts SET status='sold', buyer_id=%s WHERE id=%s",
-            (user_id, acc_id)
-        )
-        cur.close()
-    finally:
-        conn.close()
-
+                    [InlineKeyboardButton("🔙 Back",        callback_data="menu_back")]])); return
+        conn.execute("UPDATE users SET balance=balance-%s WHERE user_id=%s", (acc["price"], user_id))
+        conn.execute("UPDATE accounts SET status='sold', buyer_id=%s WHERE id=%s", (user_id, acc_id))
     await query.edit_message_text(
-        f"🎉 *Purchase Successful!*\n\n"
-        f"🔑 Account *#{acc_id}* is yours!\n"
-        f"💵 Paid: *${acc['price']:.2f}*\n\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"Your session string has been sent\n"
-        f"in a private message below. 👇\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━",
-        parse_mode="Markdown",
-        reply_markup=main_menu_keyboard()
-    )
-    await ctx.bot.send_message(
-        user_id,
-        f"🔑 *Your Account Session*\n\n"
-        f"Account *#{acc_id}* — Paid: *${acc['price']:.2f}*\n\n"
-        f"```\n{acc['session']}\n```\n\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"⚠️ Keep this safe.\n"
-        f"Do *not* share it with anyone.\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━",
-        parse_mode="Markdown"
-    )
-    await ctx.bot.send_message(
-        ADMIN_ID,
-        f"💸 *Account Sold*\n\n"
-        f"🔑 Account *#{acc_id}* sold to `{user_id}` for *${acc['price']:.2f}*.",
-        parse_mode="Markdown"
-    )
+        f"🎉 *Purchase Successful!*\n\n🔑 Account *#{acc_id}* is yours!\n💵 Paid: *${acc['price']:.2f}*\n\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\nYour session string has been sent in a private message. 👇\n━━━━━━━━━━━━━━━━━━━━━━",
+        parse_mode="Markdown", reply_markup=main_menu_keyboard())
+    await ctx.bot.send_message(user_id,
+        f"🔑 *Your Account Session*\n\nAccount *#{acc_id}* — Paid: *${acc['price']:.2f}*\n\n"
+        f"```\n{acc['session']}\n```\n\n━━━━━━━━━━━━━━━━━━━━━━\n⚠️ Keep this safe. Do *not* share it.\n━━━━━━━━━━━━━━━━━━━━━━",
+        parse_mode="Markdown")
+    await ctx.bot.send_message(ADMIN_ID,
+        f"💸 *Account Sold*\n\n🔑 Account *#{acc_id}* sold to `{user_id}` for *${acc['price']:.2f}*.",
+        parse_mode="Markdown")
 
-# ── WALLET ────────────────────────────────────────────────────────────────────
+# ── WALLET / REFER / WITHDRAW ─────────────────────────────────────────────────
 async def show_balance(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     user = query.from_user
     ensure_user(user.id, user.username or "")
-    balance  = get_balance(user.id)
-    earnings = get_referral_earnings(user.id)
-    refs     = get_referral_count(user.id)
-
     await query.edit_message_text(
-        f"╔══════════════════════╗\n"
-        f"      📊 *MY WALLET*\n"
-        f"╚══════════════════════╝\n\n"
-        f"💼 *Available Balance*\n"
-        f"   *${balance:.2f} USD*\n\n"
+        f"╔══════════════════════╗\n      📊 *MY WALLET*\n╚══════════════════════╝\n\n"
+        f"💼 *Available Balance*\n   *${get_balance(user.id):.2f} USD*\n\n"
         f"━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"👥 Referrals:       *{refs}*\n"
-        f"🤝 Referral Earned: *${earnings:.2f}*\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━",
+        f"👥 Referrals:       *{get_referral_count(user.id)}*\n"
+        f"🤝 Referral Earned: *${get_referral_earnings(user.id):.2f}*\n━━━━━━━━━━━━━━━━━━━━━━",
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup([
-            [
-                InlineKeyboardButton("💰 Deposit",  callback_data="menu_deposit"),
-                InlineKeyboardButton("💸 Withdraw", callback_data="menu_withdraw"),
-            ],
-            [InlineKeyboardButton("🔙 Back to Menu", callback_data="menu_back")],
-        ])
-    )
+            [InlineKeyboardButton("💰 Deposit",  callback_data="menu_deposit"),
+             InlineKeyboardButton("💸 Withdraw", callback_data="menu_withdraw")],
+            [InlineKeyboardButton("🔙 Back to Menu", callback_data="menu_back")]]))
 
-# ── REFER & EARN ──────────────────────────────────────────────────────────────
 async def refer_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    query        = update.callback_query
+    query = update.callback_query
     await query.answer()
-    user         = query.from_user
-    bot_username = ctx.bot.username
-    ref_link     = f"https://t.me/{bot_username}?start=ref_{user.id}"
-    ref_count    = get_referral_count(user.id)
-    ref_earnings = get_referral_earnings(user.id)
-
+    user = query.from_user
+    ref_link = f"https://t.me/{ctx.bot.username}?start=ref_{user.id}"
     await query.edit_message_text(
-        f"╔══════════════════════╗\n"
-        f"     👥 *REFER & EARN*\n"
-        f"╚══════════════════════╝\n\n"
-        f"Invite friends and earn *{int(REFERRAL_COMMISSION*100)}% commission*\n"
-        f"on every deposit they make — forever!\n\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"📊 *Your Stats*\n"
-        f"👥 Total Referrals: *{ref_count}*\n"
-        f"💰 Total Earned:    *${ref_earnings:.2f}*\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        f"🔗 *Your Referral Link:*\n"
-        f"`{ref_link}`\n\n"
-        f"📤 Share this link with friends.\n"
-        f"When they deposit, you get 2% instantly!",
-        parse_mode="Markdown",
-        reply_markup=back_keyboard()
-    )
+        f"╔══════════════════════╗\n     👥 *REFER & EARN*\n╚══════════════════════╝\n\n"
+        f"Invite friends and earn *{int(REFERRAL_COMMISSION*100)}% commission*\non every deposit — forever!\n\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n📊 *Your Stats*\n"
+        f"👥 Total Referrals: *{get_referral_count(user.id)}*\n"
+        f"💰 Total Earned:    *${get_referral_earnings(user.id):.2f}*\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n\n🔗 *Your Referral Link:*\n`{ref_link}`\n\n"
+        f"📤 Share this link. When they deposit, you get 2% instantly!",
+        parse_mode="Markdown", reply_markup=back_keyboard())
 
-# ── WITHDRAW ──────────────────────────────────────────────────────────────────
 async def withdraw_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     await query.edit_message_text(
-        f"╔══════════════════════╗\n"
-        f"      💸 *WITHDRAW*\n"
-        f"╚══════════════════════╝\n\n"
-        f"To withdraw your balance, please\n"
-        f"contact our support team directly.\n\n"
-        f"💰 Your Balance: *${get_balance(query.from_user.id):.2f}*\n\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"📩 Contact support with:\n"
-        f"  • Withdrawal amount\n"
-        f"  • Payment method & details\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━",
+        f"╔══════════════════════╗\n      💸 *WITHDRAW*\n╚══════════════════════╝\n\n"
+        f"To withdraw, contact our support team.\n\n💰 Your Balance: *${get_balance(query.from_user.id):.2f}*\n\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n📩 Contact support with:\n  • Withdrawal amount\n  • Payment method & details\n━━━━━━━━━━━━━━━━━━━━━━",
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("🆘 Contact Support", url=f"https://t.me/{SUPPORT_USERNAME}")],
-            [InlineKeyboardButton("🔙 Back to Menu",    callback_data="menu_back")],
-        ])
-    )
+            [InlineKeyboardButton("🔙 Back to Menu",    callback_data="menu_back")]]))
 
-
-# ── Build & Main ──────────────────────────────────────────────────────────────
+# ── Flask + Main ──────────────────────────────────────────────────────────────
 def build_app() -> Application:
     app = Application.builder().token(BOT_TOKEN).build()
-
     deposit_conv = ConversationHandler(
         entry_points=[CallbackQueryHandler(deposit_start, pattern="^menu_deposit$")],
         states={DEPOSIT_AMOUNT: [MessageHandler(filters.TEXT & ~filters.COMMAND, deposit_amount)]},
-        fallbacks=[CommandHandler("cancel", cancel)],
-        per_message=False,
-    )
-
+        fallbacks=[CommandHandler("cancel", cancel)], per_message=False)
     login_conv = ConversationHandler(
         entry_points=[CommandHandler("login_account", admin_login)],
         states={
@@ -966,31 +540,18 @@ def build_app() -> Application:
             ADMIN_OTP:       [MessageHandler(filters.TEXT & ~filters.COMMAND, get_otp)],
             ADMIN_ADD_PRICE: [MessageHandler(filters.TEXT & ~filters.COMMAND, set_price)],
         },
-        fallbacks=[CommandHandler("cancel", cancel)],
-        per_message=False,
-    )
-
+        fallbacks=[CommandHandler("cancel", cancel)], per_message=False)
     app.add_handler(CommandHandler("start",    start))
     app.add_handler(deposit_conv)
     app.add_handler(login_conv)
-
-    # Admin commands
     app.add_handler(CommandHandler("accounts", admin_accounts))
     app.add_handler(CommandHandler("users",    admin_users))
     app.add_handler(CommandHandler("pending",  admin_pending))
     app.add_handler(CommandHandler("credit",   admin_credit))
     app.add_handler(CommandHandler("deduct",   admin_deduct))
-    app.add_handler(MessageHandler(
-        filters.Regex(r"^/approve_\d+$") & filters.User(ADMIN_ID), admin_approve
-    ))
-    app.add_handler(MessageHandler(
-        filters.Regex(r"^/reject_\d+$") & filters.User(ADMIN_ID), admin_reject
-    ))
-    app.add_handler(MessageHandler(
-        filters.Regex(r"^/del_\d+$") & filters.User(ADMIN_ID), admin_delete
-    ))
-
-    # User callbacks
+    app.add_handler(MessageHandler(filters.Regex(r"^/approve_\d+$") & filters.User(ADMIN_ID), admin_approve))
+    app.add_handler(MessageHandler(filters.Regex(r"^/reject_\d+$")  & filters.User(ADMIN_ID), admin_reject))
+    app.add_handler(MessageHandler(filters.Regex(r"^/del_\d+$")     & filters.User(ADMIN_ID), admin_delete))
     app.add_handler(CallbackQueryHandler(buy_menu,      pattern="^menu_buy$"))
     app.add_handler(CallbackQueryHandler(view_account,  pattern=r"^view_\d+$"))
     app.add_handler(CallbackQueryHandler(confirm_buy,   pattern=r"^confirm_\d+$"))
@@ -998,51 +559,33 @@ def build_app() -> Application:
     app.add_handler(CallbackQueryHandler(refer_menu,    pattern="^menu_refer$"))
     app.add_handler(CallbackQueryHandler(withdraw_menu, pattern="^menu_withdraw$"))
     app.add_handler(CallbackQueryHandler(menu_back,     pattern="^menu_back$"))
-
     return app
 
 def main():
-    import asyncio
-    import threading
-    from flask import Flask, request, Response
-
-    flask_app = Flask(__name__)
-    loop = asyncio.new_event_loop()
-
     global ptb_app
     init_db()
     ptb_app = build_app()
 
-    @flask_app.route("/", methods=["GET"])
+    @flask_app.get("/")
     def health():
         return Response("OK", status=200)
 
-    @flask_app.route(f"/webhook/{BOT_TOKEN}", methods=["POST"])
+    @flask_app.post(f"/webhook/{BOT_TOKEN}")
     def webhook():
+        import asyncio
         data = request.get_json(force=True)
-        upd  = Update.de_json(data, ptb_app.bot)
-        asyncio.run_coroutine_threadsafe(ptb_app.process_update(upd), loop).result()
+        asyncio.run(ptb_app.process_update(Update.de_json(data, ptb_app.bot)))
         return Response("ok", status=200)
 
+    import asyncio
     async def setup():
         await ptb_app.initialize()
         await ptb_app.bot.set_webhook(f"{WEBHOOK_URL}/webhook/{BOT_TOKEN}")
         logger.info(f"Webhook set: {WEBHOOK_URL}/webhook/{BOT_TOKEN}")
 
-    def run_loop():
-        asyncio.set_event_loop(loop)
-        loop.run_forever()
-
-    # Start the asyncio event loop in a background thread
-    t = threading.Thread(target=run_loop, daemon=True)
-    t.start()
-
-    # Run async setup (initialize PTB + set webhook) on that loop
-    future = asyncio.run_coroutine_threadsafe(setup(), loop)
-    future.result(timeout=30)
-
-    logger.info(f"Starting Flask on port {PORT}")
-    flask_app.run(host="0.0.0.0", port=PORT, threaded=True)
+    asyncio.run(setup())
+    logger.info(f"Starting on port {PORT}")
+    flask_app.run(host="0.0.0.0", port=PORT)
 
 if __name__ == "__main__":
     main()
