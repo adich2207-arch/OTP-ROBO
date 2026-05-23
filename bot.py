@@ -1,7 +1,7 @@
 import os
 import logging
-import psycopg
-from psycopg.rows import dict_row
+import psycopg2
+import psycopg2.extras
 from dotenv import load_dotenv
 load_dotenv()
 
@@ -38,11 +38,15 @@ ptb_app: Application = None
 
 # ── Database ──────────────────────────────────────────────────────────────────
 def get_db():
-    return psycopg.connect(DATABASE_URL, row_factory=dict_row)
+    conn = psycopg2.connect(DATABASE_URL, cursor_factory=psycopg2.extras.RealDictCursor)
+    conn.autocommit = True
+    return conn
 
 def init_db():
-    with get_db() as conn:
-        conn.execute("""
+    conn = get_db()
+    try:
+        cur = conn.cursor()
+        cur.execute("""
             CREATE TABLE IF NOT EXISTS users (
                 user_id     BIGINT PRIMARY KEY,
                 username    TEXT    DEFAULT '',
@@ -51,9 +55,9 @@ def init_db():
                 created_at  TIMESTAMPTZ DEFAULT NOW()
             )
         """)
-        conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS referred_by BIGINT DEFAULT NULL")
-        conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS username TEXT DEFAULT ''")
-        conn.execute("""
+        cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS referred_by BIGINT DEFAULT NULL")
+        cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS username TEXT DEFAULT ''")
+        cur.execute("""
             CREATE TABLE IF NOT EXISTS deposits (
                 id         BIGSERIAL PRIMARY KEY,
                 user_id    BIGINT,
@@ -62,7 +66,7 @@ def init_db():
                 created_at TIMESTAMPTZ DEFAULT NOW()
             )
         """)
-        conn.execute("""
+        cur.execute("""
             CREATE TABLE IF NOT EXISTS accounts (
                 id         BIGSERIAL PRIMARY KEY,
                 session    TEXT,
@@ -72,7 +76,7 @@ def init_db():
                 created_at TIMESTAMPTZ DEFAULT NOW()
             )
         """)
-        conn.execute("""
+        cur.execute("""
             CREATE TABLE IF NOT EXISTS referral_earnings (
                 id          BIGSERIAL PRIMARY KEY,
                 referrer_id BIGINT,
@@ -82,42 +86,63 @@ def init_db():
                 created_at  TIMESTAMPTZ DEFAULT NOW()
             )
         """)
+        cur.close()
+    finally:
+        conn.close()
     logger.info("✅ Database initialised.")
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 def ensure_user(user_id: int, username: str = "", referred_by: int = None):
-    with get_db() as conn:
-        existing = conn.execute(
-            "SELECT user_id FROM users WHERE user_id=%s", (user_id,)
-        ).fetchone()
+    conn = get_db()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT user_id FROM users WHERE user_id=%s", (user_id,))
+        existing = cur.fetchone()
         if not existing:
-            conn.execute(
+            cur.execute(
                 "INSERT INTO users (user_id, username, referred_by) VALUES (%s,%s,%s)",
                 (user_id, username or "", referred_by)
             )
+        cur.close()
+    finally:
+        conn.close()
 
 def get_balance(user_id: int) -> float:
-    with get_db() as conn:
-        row = conn.execute(
-            "SELECT balance FROM users WHERE user_id=%s", (user_id,)
-        ).fetchone()
+    conn = get_db()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT balance FROM users WHERE user_id=%s", (user_id,))
+        row = cur.fetchone()
+        cur.close()
         return float(row["balance"]) if row else 0.0
+    finally:
+        conn.close()
 
 def get_referral_count(user_id: int) -> int:
-    with get_db() as conn:
-        row = conn.execute(
-            "SELECT COUNT(*) AS cnt FROM users WHERE referred_by=%s", (user_id,)
-        ).fetchone()
+    conn = get_db()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT COUNT(*) AS cnt FROM users WHERE referred_by=%s", (user_id,))
+        row = cur.fetchone()
+        cur.close()
         return row["cnt"] if row else 0
+    finally:
+        conn.close()
 
 def get_referral_earnings(user_id: int) -> float:
-    with get_db() as conn:
-        row = conn.execute(
+    conn = get_db()
+    try:
+        cur = conn.cursor()
+        cur.execute(
             "SELECT COALESCE(SUM(commission),0) AS total FROM referral_earnings WHERE referrer_id=%s",
             (user_id,)
-        ).fetchone()
+        )
+        row = cur.fetchone()
+        cur.close()
         return float(row["total"]) if row else 0.0
+    finally:
+        conn.close()
 
 # ── Keyboards ─────────────────────────────────────────────────────────────────
 def main_menu_keyboard():
@@ -239,12 +264,18 @@ async def deposit_amount(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
         return DEPOSIT_AMOUNT
 
-    with get_db() as conn:
-        row = conn.execute(
+    conn = get_db()
+    try:
+        cur = conn.cursor()
+        cur.execute(
             "INSERT INTO deposits (user_id, amount) VALUES (%s,%s) RETURNING id",
             (user.id, amount)
-        ).fetchone()
+        )
+        row = cur.fetchone()
         dep_id = row["id"]
+        cur.close()
+    finally:
+        conn.close()
 
     await ctx.bot.send_message(
         ADMIN_ID,
@@ -281,35 +312,42 @@ async def admin_approve(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Usage: /approve_<id>")
         return
 
-    with get_db() as conn:
-        dep = conn.execute("SELECT * FROM deposits WHERE id=%s", (dep_id,)).fetchone()
+    conn = get_db()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT * FROM deposits WHERE id=%s", (dep_id,))
+        dep = cur.fetchone()
         if not dep:
             await update.message.reply_text("❌ Deposit not found.")
+            cur.close()
             return
         if dep["status"] != "pending":
             await update.message.reply_text("⚠️ Already processed.")
+            cur.close()
             return
-        conn.execute("UPDATE deposits SET status='approved' WHERE id=%s", (dep_id,))
-        conn.execute(
+        cur.execute("UPDATE deposits SET status='approved' WHERE id=%s", (dep_id,))
+        cur.execute(
             "UPDATE users SET balance=balance+%s WHERE user_id=%s",
             (dep["amount"], dep["user_id"])
         )
         # Referral commission
-        referrer = conn.execute(
-            "SELECT referred_by FROM users WHERE user_id=%s", (dep["user_id"],)
-        ).fetchone()
+        cur.execute("SELECT referred_by FROM users WHERE user_id=%s", (dep["user_id"],))
+        referrer = cur.fetchone()
         commission = 0.0
         if referrer and referrer["referred_by"]:
             commission = float(dep["amount"]) * REFERRAL_COMMISSION
-            conn.execute(
+            cur.execute(
                 "UPDATE users SET balance=balance+%s WHERE user_id=%s",
                 (commission, referrer["referred_by"])
             )
-            conn.execute(
+            cur.execute(
                 "INSERT INTO referral_earnings (referrer_id,referred_id,deposit_id,commission) "
                 "VALUES (%s,%s,%s,%s)",
                 (referrer["referred_by"], dep["user_id"], dep_id, commission)
             )
+        cur.close()
+    finally:
+        conn.close()
 
     await update.message.reply_text(
         f"✅ Deposit #{dep_id} approved! *${dep['amount']:.2f}* credited."
@@ -345,12 +383,19 @@ async def admin_reject(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     except (IndexError, ValueError):
         await update.message.reply_text("Usage: /reject_<id>")
         return
-    with get_db() as conn:
-        dep = conn.execute("SELECT * FROM deposits WHERE id=%s", (dep_id,)).fetchone()
+    conn = get_db()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT * FROM deposits WHERE id=%s", (dep_id,))
+        dep = cur.fetchone()
         if not dep or dep["status"] != "pending":
             await update.message.reply_text("❌ Not found or already processed.")
+            cur.close()
             return
-        conn.execute("UPDATE deposits SET status='rejected' WHERE id=%s", (dep_id,))
+        cur.execute("UPDATE deposits SET status='rejected' WHERE id=%s", (dep_id,))
+        cur.close()
+    finally:
+        conn.close()
     await update.message.reply_text(f"❌ Deposit #{dep_id} rejected.")
     await ctx.bot.send_message(
         dep["user_id"],
@@ -378,16 +423,17 @@ async def admin_credit(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # Create user row if they don't exist yet
     ensure_user(user_id, "")
-    with get_db() as conn:
-        conn.execute(
-            "UPDATE users SET balance=balance+%s WHERE user_id=%s", (amount, user_id)
-        )
-        row = conn.execute(
-            "SELECT balance FROM users WHERE user_id=%s", (user_id,)
-        ).fetchone()
+    conn = get_db()
+    try:
+        cur = conn.cursor()
+        cur.execute("UPDATE users SET balance=balance+%s WHERE user_id=%s", (amount, user_id))
+        cur.execute("SELECT balance FROM users WHERE user_id=%s", (user_id,))
+        row = cur.fetchone()
         new_bal = float(row["balance"]) if row else amount
+        cur.close()
+    finally:
+        conn.close()
 
     await update.message.reply_text(
         f"✅ *${amount:.2f} credited to `{user_id}`*\n"
@@ -421,19 +467,21 @@ async def admin_deduct(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    with get_db() as conn:
-        bal = conn.execute(
-            "SELECT balance FROM users WHERE user_id=%s", (user_id,)
-        ).fetchone()
+    conn = get_db()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT balance FROM users WHERE user_id=%s", (user_id,))
+        bal = cur.fetchone()
         if not bal or float(bal["balance"]) < amount:
             await update.message.reply_text("❌ User not found or insufficient balance.")
+            cur.close()
             return
-        conn.execute(
-            "UPDATE users SET balance=balance-%s WHERE user_id=%s", (amount, user_id)
-        )
-        new_bal = float(conn.execute(
-            "SELECT balance FROM users WHERE user_id=%s", (user_id,)
-        ).fetchone()["balance"])
+        cur.execute("UPDATE users SET balance=balance-%s WHERE user_id=%s", (amount, user_id))
+        cur.execute("SELECT balance FROM users WHERE user_id=%s", (user_id,))
+        new_bal = float(cur.fetchone()["balance"])
+        cur.close()
+    finally:
+        conn.close()
 
     await update.message.reply_text(
         f"✅ *${amount:.2f} deducted from `{user_id}`*\n"
@@ -544,11 +592,17 @@ async def set_price(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Enter a valid positive price.")
         return ADMIN_ADD_PRICE
 
-    with get_db() as conn:
-        row = conn.execute(
+    conn = get_db()
+    try:
+        cur = conn.cursor()
+        cur.execute(
             "INSERT INTO accounts (session, price) VALUES (%s,%s) RETURNING id",
             (ctx.user_data["session"], price)
-        ).fetchone()
+        )
+        row = cur.fetchone()
+        cur.close()
+    finally:
+        conn.close()
 
     await update.message.reply_text(
         f"🎉 *Account #{row['id']} Added!*\n\n"
@@ -562,10 +616,14 @@ async def set_price(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def admin_accounts(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return
-    with get_db() as conn:
-        rows = conn.execute(
-            "SELECT id, price, status, buyer_id FROM accounts ORDER BY id DESC"
-        ).fetchall()
+    conn = get_db()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT id, price, status, buyer_id FROM accounts ORDER BY id DESC")
+        rows = cur.fetchall()
+        cur.close()
+    finally:
+        conn.close()
     if not rows:
         await update.message.reply_text("📦 No accounts in the store yet.")
         return
@@ -581,8 +639,14 @@ async def admin_accounts(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def admin_users(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return
-    with get_db() as conn:
-        users = conn.execute("SELECT * FROM users ORDER BY created_at DESC").fetchall()
+    conn = get_db()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT * FROM users ORDER BY created_at DESC")
+        users = cur.fetchall()
+        cur.close()
+    finally:
+        conn.close()
     lines = [f"👥 *All Users* ({len(users)} total)\n━━━━━━━━━━━━━━━━━━━━━━"]
     for u in users:
         lines.append(f"• @{u['username'] or 'N/A'} (`{u['user_id']}`) — *${u['balance']:.2f}*")
@@ -591,11 +655,17 @@ async def admin_users(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def admin_pending(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return
-    with get_db() as conn:
-        deps = conn.execute(
+    conn = get_db()
+    try:
+        cur = conn.cursor()
+        cur.execute(
             "SELECT d.*, u.username FROM deposits d "
             "JOIN users u ON d.user_id=u.user_id WHERE d.status='pending'"
-        ).fetchall()
+        )
+        deps = cur.fetchall()
+        cur.close()
+    finally:
+        conn.close()
     if not deps:
         await update.message.reply_text("✅ No pending deposits.")
         return
@@ -615,8 +685,13 @@ async def admin_delete(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     except (IndexError, ValueError):
         await update.message.reply_text("Usage: /del_<id>")
         return
-    with get_db() as conn:
-        conn.execute("DELETE FROM accounts WHERE id=%s", (acc_id,))
+    conn = get_db()
+    try:
+        cur = conn.cursor()
+        cur.execute("DELETE FROM accounts WHERE id=%s", (acc_id,))
+        cur.close()
+    finally:
+        conn.close()
     await update.message.reply_text(f"🗑 Account #{acc_id} deleted.")
 
 
@@ -625,10 +700,14 @@ async def buy_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
 
-    with get_db() as conn:
-        accounts = conn.execute(
-            "SELECT id, price FROM accounts WHERE status='available' ORDER BY price ASC"
-        ).fetchall()
+    conn = get_db()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT id, price FROM accounts WHERE status='available' ORDER BY price ASC")
+        accounts = cur.fetchall()
+        cur.close()
+    finally:
+        conn.close()
 
     if not accounts:
         await query.edit_message_text(
@@ -669,11 +748,16 @@ async def view_account(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     user_id = query.from_user.id
     ensure_user(user_id, query.from_user.username or "")
 
-    with get_db() as conn:
-        acc = conn.execute(
-            "SELECT id, price FROM accounts WHERE id=%s AND status='available'",
-            (acc_id,)
-        ).fetchone()
+    conn = get_db()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT id, price FROM accounts WHERE id=%s AND status='available'", (acc_id,)
+        )
+        acc = cur.fetchone()
+        cur.close()
+    finally:
+        conn.close()
 
     if not acc:
         await query.edit_message_text(
@@ -711,13 +795,17 @@ async def confirm_buy(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     user_id = query.from_user.id
     ensure_user(user_id, query.from_user.username or "")
 
-    with get_db() as conn:
-        acc = conn.execute(
+    conn = get_db()
+    try:
+        cur = conn.cursor()
+        cur.execute(
             "SELECT * FROM accounts WHERE id=%s AND status='available'", (acc_id,)
-        ).fetchone()
+        )
+        acc = cur.fetchone()
 
         if not acc:
             await query.edit_message_text("❌ Account no longer available.")
+            cur.close()
             return
 
         balance = get_balance(user_id)
@@ -733,16 +821,20 @@ async def confirm_buy(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                     [InlineKeyboardButton("🔙 Back",        callback_data="menu_back")],
                 ])
             )
+            cur.close()
             return
 
-        conn.execute(
+        cur.execute(
             "UPDATE users SET balance=balance-%s WHERE user_id=%s",
             (acc["price"], user_id)
         )
-        conn.execute(
+        cur.execute(
             "UPDATE accounts SET status='sold', buyer_id=%s WHERE id=%s",
             (user_id, acc_id)
         )
+        cur.close()
+    finally:
+        conn.close()
 
     await query.edit_message_text(
         f"🎉 *Purchase Successful!*\n\n"
@@ -909,44 +1001,48 @@ def build_app() -> Application:
 
     return app
 
-async def run():
-    """Single async entry point — no event loop conflicts."""
+def main():
+    import asyncio
+    import threading
+    from flask import Flask, request, Response
+
+    flask_app = Flask(__name__)
+    loop = asyncio.new_event_loop()
+
     global ptb_app
     init_db()
     ptb_app = build_app()
 
-    await ptb_app.initialize()
-    await ptb_app.bot.set_webhook(f"{WEBHOOK_URL}/webhook/{BOT_TOKEN}")
-    logger.info(f"Webhook set: {WEBHOOK_URL}/webhook/{BOT_TOKEN}")
+    @flask_app.route("/", methods=["GET"])
+    def health():
+        return Response("OK", status=200)
 
-    from starlette.applications import Starlette
-    from starlette.requests import Request as StarletteRequest
-    from starlette.responses import PlainTextResponse
-    from starlette.routing import Route
-
-    async def health(req: StarletteRequest):
-        return PlainTextResponse("OK")
-
-    async def webhook(req: StarletteRequest):
-        data = await req.json()
+    @flask_app.route(f"/webhook/{BOT_TOKEN}", methods=["POST"])
+    def webhook():
+        data = request.get_json(force=True)
         upd  = Update.de_json(data, ptb_app.bot)
-        await ptb_app.process_update(upd)
-        return PlainTextResponse("ok")
+        asyncio.run_coroutine_threadsafe(ptb_app.process_update(upd), loop).result()
+        return Response("ok", status=200)
 
-    asgi_app = Starlette(routes=[
-        Route("/", health),
-        Route(f"/webhook/{BOT_TOKEN}", webhook, methods=["POST"]),
-    ])
+    async def setup():
+        await ptb_app.initialize()
+        await ptb_app.bot.set_webhook(f"{WEBHOOK_URL}/webhook/{BOT_TOKEN}")
+        logger.info(f"Webhook set: {WEBHOOK_URL}/webhook/{BOT_TOKEN}")
 
-    import uvicorn
-    config = uvicorn.Config(asgi_app, host="0.0.0.0", port=PORT, log_level="info")
-    server = uvicorn.Server(config)
-    logger.info(f"Starting uvicorn on port {PORT}")
-    await server.serve()
+    def run_loop():
+        asyncio.set_event_loop(loop)
+        loop.run_forever()
 
-def main():
-    import asyncio
-    asyncio.run(run())
+    # Start the asyncio event loop in a background thread
+    t = threading.Thread(target=run_loop, daemon=True)
+    t.start()
+
+    # Run async setup (initialize PTB + set webhook) on that loop
+    future = asyncio.run_coroutine_threadsafe(setup(), loop)
+    future.result(timeout=30)
+
+    logger.info(f"Starting Flask on port {PORT}")
+    flask_app.run(host="0.0.0.0", port=PORT, threaded=True)
 
 if __name__ == "__main__":
     main()
