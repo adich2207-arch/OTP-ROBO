@@ -90,12 +90,13 @@ def get_referral_earnings(user_id: int) -> float:
 # ── Keyboards ─────────────────────────────────────────────────────────────────
 def main_menu_keyboard():
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("💰 Deposit",      callback_data="menu_deposit"),
-         InlineKeyboardButton("💸 Withdraw",     callback_data="menu_withdraw")],
         [InlineKeyboardButton("🛒 Buy Account",  callback_data="menu_buy"),
-         InlineKeyboardButton("📊 My Wallet",    callback_data="menu_balance")],
-        [InlineKeyboardButton("👥 Refer & Earn", callback_data="menu_refer"),
-         InlineKeyboardButton("🆘 Support",      url=f"https://t.me/{SUPPORT_USERNAME}")],
+         InlineKeyboardButton("💰 Sell Account", callback_data="menu_sell")],
+        [InlineKeyboardButton("💵 Deposit",      callback_data="menu_deposit"),
+         InlineKeyboardButton("💸 Withdraw",     callback_data="menu_withdraw")],
+        [InlineKeyboardButton("📊 My Wallet",    callback_data="menu_balance"),
+         InlineKeyboardButton("👥 Refer & Earn", callback_data="menu_refer")],
+        [InlineKeyboardButton("🆘 Support",      url=f"https://t.me/{SUPPORT_USERNAME}")],
     ])
 
 def back_keyboard():
@@ -503,51 +504,94 @@ async def confirm_buy(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     phone = acc.get("phone", "").strip()
 
-    # Try to send a fresh OTP to the account's phone number
+    # Request OTP, wait for it to arrive via polling, then forward it to the buyer
     try:
+        import re
+        import asyncio
         from telethon import TelegramClient
         from telethon.sessions import StringSession
+        from telethon.tl.functions.messages import GetHistoryRequest
 
         client = TelegramClient(StringSession(acc["session"]), API_ID, API_HASH)
         await client.connect()
+
+        # Trigger the OTP by requesting a login code for this phone
         await client.send_code_request(phone)
+
+        # Poll the "Telegram" service account (777000) for the OTP message
+        otp_code = None
+        deadline = asyncio.get_event_loop().time() + 60  # wait up to 60 s
+        while asyncio.get_event_loop().time() < deadline:
+            await asyncio.sleep(3)
+            try:
+                history = await client(GetHistoryRequest(
+                    peer=777000,   # Telegram's official service account
+                    limit=5,
+                    offset_date=None, offset_id=0,
+                    max_id=0, min_id=0, add_offset=0, hash=0
+                ))
+                for msg in history.messages:
+                    text = getattr(msg, "message", "") or ""
+                    match = re.search(r'\b(\d{5,6})\b', text)
+                    if match:
+                        otp_code = match.group(1)
+                        break
+            except Exception as poll_err:
+                logger.warning(f"OTP poll error: {poll_err}")
+            if otp_code:
+                break
+
         await client.disconnect()
 
-        # Send only phone + OTP notification — simple and clear
-        await ctx.bot.send_message(
-            user_id,
-            f"✅ *Your Account is Ready!*\n\n"
-            f"━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"📱 *Phone Number:*\n"
-            f"`{phone}`\n\n"
-            f"📩 *OTP:* A login code has been sent\n"
-            f"to the phone number above.\n\n"
-            f"━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"*How to login:*\n"
-            f"1️⃣ Open Telegram on any device\n"
-            f"2️⃣ Enter the phone number above\n"
-            f"3️⃣ Enter the OTP sent to that number\n"
-            f"━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"⚠️ Do *not* share these details with anyone.",
-            parse_mode="Markdown"
-        )
+        if otp_code:
+            await ctx.bot.send_message(
+                user_id,
+                f"✅ *Your Account is Ready!*\n\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"📱 *Phone Number:*\n`{phone}`\n\n"
+                f"🔐 *Login OTP:*\n`{otp_code}`\n\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"*How to login:*\n"
+                f"1️⃣ Open Telegram on any device\n"
+                f"2️⃣ Enter the phone number above\n"
+                f"3️⃣ Enter the OTP code above\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"⚠️ OTP expires in a few minutes.\n"
+                f"⚠️ Do *not* share these details.",
+                parse_mode="Markdown"
+            )
+        else:
+            # OTP didn't arrive in time — send phone + instructions
+            await ctx.bot.send_message(
+                user_id,
+                f"✅ *Your Account is Ready!*\n\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"📱 *Phone Number:*\n`{phone}`\n\n"
+                f"📩 An OTP has been sent to this number.\n\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"*How to login:*\n"
+                f"1️⃣ Open Telegram on any device\n"
+                f"2️⃣ Enter the phone number above\n"
+                f"3️⃣ Enter the OTP you received\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"⚠️ Do *not* share these details.",
+                parse_mode="Markdown"
+            )
 
     except Exception as e:
         logger.error(f"OTP send failed for account #{acc_id}: {e}")
-        # Fallback — send phone number only with instructions
         await ctx.bot.send_message(
             user_id,
             f"✅ *Your Account is Ready!*\n\n"
             f"━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"📱 *Phone Number:*\n"
-            f"`{phone}`\n\n"
+            f"📱 *Phone Number:*\n`{phone}`\n\n"
             f"━━━━━━━━━━━━━━━━━━━━━━\n"
             f"*How to login:*\n"
             f"1️⃣ Open Telegram on any device\n"
             f"2️⃣ Enter the phone number above\n"
-            f"3️⃣ Request an OTP — it will arrive via SMS\n"
+            f"3️⃣ Request OTP — it will arrive via SMS\n"
             f"━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"⚠️ Do *not* share these details with anyone.\n\n"
+            f"⚠️ Do *not* share these details.\n\n"
             f"Need help? Contact 🆘 Support.",
             parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup([
@@ -562,6 +606,28 @@ async def confirm_buy(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f"🔑 Account *#{acc_id}* sold to `{user_id}` for *${acc['price']:.2f}*.\n"
         f"📱 Phone: `{phone}`",
         parse_mode="Markdown"
+    )
+
+# ── SELL FLOW ─────────────────────────────────────────────────────────────────
+async def sell_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    await query.edit_message_text(
+        f"╔══════════════════════╗\n     💰 *SELL ACCOUNT*\n╚══════════════════════╝\n\n"
+        f"Want to sell your Telegram account on our marketplace?\n\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"📋 *How to sell:*\n"
+        f"  1️⃣ Contact our support team\n"
+        f"  2️⃣ Provide your account details\n"
+        f"  3️⃣ We verify & list it for sale\n"
+        f"  4️⃣ Get paid when it sells!\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"💬 Tap below to contact support and start the process.",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("🆘 Contact Support to Sell", url=f"https://t.me/{SUPPORT_USERNAME}")],
+            [InlineKeyboardButton("🔙 Back to Menu", callback_data="menu_back")]
+        ])
     )
 
 # ── WALLET / REFER / WITHDRAW ─────────────────────────────────────────────────
@@ -636,6 +702,7 @@ def build_app() -> Application:
     app.add_handler(MessageHandler(filters.Regex(r"^/reject_\d+$")  & filters.User(ADMIN_ID), admin_reject))
     app.add_handler(MessageHandler(filters.Regex(r"^/del_\d+$")     & filters.User(ADMIN_ID), admin_delete))
     app.add_handler(CallbackQueryHandler(buy_menu,      pattern="^menu_buy$"))
+    app.add_handler(CallbackQueryHandler(sell_menu,     pattern="^menu_sell$"))
     app.add_handler(CallbackQueryHandler(view_account,  pattern=r"^view_\d+$"))
     app.add_handler(CallbackQueryHandler(confirm_buy,   pattern=r"^confirm_\d+$"))
     app.add_handler(CallbackQueryHandler(show_balance,  pattern="^menu_balance$"))
