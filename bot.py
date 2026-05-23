@@ -574,24 +574,38 @@ def main():
 
     @flask_app.post(f"/webhook/{BOT_TOKEN}")
     def webhook():
-        data = request.get_json(force=True)
+        import asyncio
+        data   = request.get_json(force=True)
         update = Update.de_json(data, ptb_app.bot)
-        loop.run_until_complete(ptb_app.process_update(update))
+        future = asyncio.run_coroutine_threadsafe(
+            ptb_app.process_update(update), loop
+        )
+        future.result(timeout=30)   # wait up to 30s, raises on error
         return Response("ok", status=200)
 
     import asyncio
+    import threading
+
     loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
 
     async def setup():
         await ptb_app.initialize()
         await ptb_app.bot.set_webhook(
             f"{WEBHOOK_URL}/webhook/{BOT_TOKEN}",
-            drop_pending_updates=True   # ignore queued updates on restart
+            drop_pending_updates=True
         )
         logger.info(f"Webhook set: {WEBHOOK_URL}/webhook/{BOT_TOKEN}")
 
-    loop.run_until_complete(setup())
+    # Run the event loop in a background thread so Flask and asyncio coexist
+    def run_loop():
+        loop.run_forever()
+
+    t = threading.Thread(target=run_loop, daemon=True)
+    t.start()
+
+    # Run setup on the background loop
+    asyncio.run_coroutine_threadsafe(setup(), loop).result(timeout=30)
+
     logger.info(f"Starting on port {PORT}")
     flask_app.run(host="0.0.0.0", port=PORT)
 
