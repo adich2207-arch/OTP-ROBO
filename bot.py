@@ -460,80 +460,109 @@ async def confirm_buy(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     acc_id  = int(query.data.split("_")[1])
     user_id = query.from_user.id
     ensure_user(user_id, query.from_user.username or "")
+
     with get_db() as conn:
-        acc = conn.execute("SELECT * FROM accounts WHERE id=%s AND status='available'", (acc_id,)).fetchone()
+        acc = conn.execute(
+            "SELECT * FROM accounts WHERE id=%s AND status='available'", (acc_id,)
+        ).fetchone()
         if not acc:
             await query.edit_message_text("❌ Account no longer available."); return
+
         balance = get_balance(user_id)
         if balance < float(acc["price"]):
             await query.edit_message_text(
-                f"❌ *Insufficient Balance*\n\n💼 Your balance: *${balance:.2f}*\n💵 Required: *${acc['price']:.2f}*",
+                f"❌ *Insufficient Balance*\n\n"
+                f"💼 Your balance: *${balance:.2f}*\n"
+                f"💵 Required:     *${acc['price']:.2f}*",
                 parse_mode="Markdown",
                 reply_markup=InlineKeyboardMarkup([
                     [InlineKeyboardButton("💰 Deposit Now", callback_data="menu_deposit")],
-                    [InlineKeyboardButton("🔙 Back",        callback_data="menu_back")]])); return
-        conn.execute("UPDATE users SET balance=balance-%s WHERE user_id=%s", (acc["price"], user_id))
-        conn.execute("UPDATE accounts SET status='sold', buyer_id=%s WHERE id=%s", (user_id, acc_id))
+                    [InlineKeyboardButton("🔙 Back",        callback_data="menu_back")]
+                ])
+            )
+            return
+
+        # Deduct balance and mark sold
+        conn.execute(
+            "UPDATE users SET balance=balance-%s WHERE user_id=%s", (acc["price"], user_id)
+        )
+        conn.execute(
+            "UPDATE accounts SET status='sold', buyer_id=%s WHERE id=%s", (user_id, acc_id)
+        )
 
     await query.edit_message_text(
-        f"🎉 *Purchase Successful!*\n\n🔑 Account *#{acc_id}* is yours!\n💵 Paid: *${acc['price']:.2f}*\n\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━\n⏳ Requesting OTP for your account...\n━━━━━━━━━━━━━━━━━━━━━━",
-        parse_mode="Markdown")
+        f"🎉 *Purchase Successful!*\n\n"
+        f"🔑 Account *#{acc_id}* is yours!\n"
+        f"💵 Paid: *${acc['price']:.2f}*\n\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"⏳ Sending login details...\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━",
+        parse_mode="Markdown",
+        reply_markup=main_menu_keyboard()
+    )
 
-    # Send phone number first
-    phone = acc.get("phone", "")
-    if phone:
-        await ctx.bot.send_message(user_id,
-            f"📱 *Account Phone Number*\n\n`{phone}`\n\n"
-            f"━━━━━━━━━━━━━━━━━━━━━━\n⏳ Requesting a fresh OTP now...",
-            parse_mode="Markdown")
+    phone = acc.get("phone", "").strip()
 
-    # Request fresh OTP using the stored session
-    otp_sent = False
+    # Try to send a fresh OTP to the account's phone number
     try:
         from telethon import TelegramClient
         from telethon.sessions import StringSession
+
         client = TelegramClient(StringSession(acc["session"]), API_ID, API_HASH)
         await client.connect()
-        result = await client.send_code_request(phone)
-        # Store for potential re-request — we just need to notify buyer OTP was sent
+        await client.send_code_request(phone)
         await client.disconnect()
-        otp_sent = True
-        await ctx.bot.send_message(user_id,
-            f"📩 *OTP Sent to {phone}*\n\n"
-            f"A login OTP has been sent to the account's phone number.\n\n"
+
+        # Send only phone + OTP notification — simple and clear
+        await ctx.bot.send_message(
+            user_id,
+            f"✅ *Your Account is Ready!*\n\n"
             f"━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"📋 *Account Details*\n"
-            f"📱 Phone: `{phone}`\n\n"
-            f"🔑 *Session String* (for Telethon/Pyrogram):\n"
-            f"```\n{acc['session']}\n```\n\n"
+            f"📱 *Phone Number:*\n"
+            f"`{phone}`\n\n"
+            f"📩 *OTP:* A login code has been sent\n"
+            f"to the phone number above.\n\n"
             f"━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"⚠️ Keep these safe. Do *not* share them.\n"
-            f"━━━━━━━━━━━━━━━━━━━━━━",
-            parse_mode="Markdown")
+            f"*How to login:*\n"
+            f"1️⃣ Open Telegram on any device\n"
+            f"2️⃣ Enter the phone number above\n"
+            f"3️⃣ Enter the OTP sent to that number\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"⚠️ Do *not* share these details with anyone.",
+            parse_mode="Markdown"
+        )
+
     except Exception as e:
-        logger.error(f"OTP request failed for account #{acc_id}: {e}")
-        # Still send session string even if OTP fails
-        await ctx.bot.send_message(user_id,
-            f"🔑 *Your Account Details*\n\n"
-            f"Account *#{acc_id}* — Paid: *${acc['price']:.2f}*\n\n"
-            + (f"📱 Phone: `{phone}`\n\n" if phone else "")
-            + f"🔑 *Session String:*\n```\n{acc['session']}\n```\n\n"
+        logger.error(f"OTP send failed for account #{acc_id}: {e}")
+        # Fallback — send phone number only with instructions
+        await ctx.bot.send_message(
+            user_id,
+            f"✅ *Your Account is Ready!*\n\n"
             f"━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"⚠️ OTP auto-request failed. Use the session string directly.\n"
-            f"⚠️ Keep these safe. Do *not* share them.\n"
-            f"━━━━━━━━━━━━━━━━━━━━━━",
-            parse_mode="Markdown")
+            f"📱 *Phone Number:*\n"
+            f"`{phone}`\n\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"*How to login:*\n"
+            f"1️⃣ Open Telegram on any device\n"
+            f"2️⃣ Enter the phone number above\n"
+            f"3️⃣ Request an OTP — it will arrive via SMS\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"⚠️ Do *not* share these details with anyone.\n\n"
+            f"Need help? Contact 🆘 Support.",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🆘 Support", url=f"https://t.me/{SUPPORT_USERNAME}")]
+            ])
+        )
 
-    await ctx.bot.send_message(ADMIN_ID,
-        f"💸 *Account Sold*\n\n🔑 Account *#{acc_id}* sold to `{user_id}` for *${acc['price']:.2f}*."
-        + (f"\n📩 OTP {'sent' if otp_sent else 'failed — session delivered instead'}." ),
-        parse_mode="Markdown")
-
-    # Update the purchase message with menu
-    await ctx.bot.send_message(user_id,
-        f"✅ *All done!* Check the messages above for your account details.",
-        reply_markup=main_menu_keyboard())
+    # Notify admin
+    await ctx.bot.send_message(
+        ADMIN_ID,
+        f"💸 *Account Sold*\n\n"
+        f"🔑 Account *#{acc_id}* sold to `{user_id}` for *${acc['price']:.2f}*.\n"
+        f"📱 Phone: `{phone}`",
+        parse_mode="Markdown"
+    )
 
 # ── WALLET / REFER / WITHDRAW ─────────────────────────────────────────────────
 async def show_balance(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
