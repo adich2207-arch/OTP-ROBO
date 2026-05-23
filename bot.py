@@ -504,48 +504,59 @@ async def confirm_buy(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     phone = acc.get("phone", "").strip()
 
-    # ── OTP flow ──────────────────────────────────────────────────────────────
-    # Strategy:
-    #   1. Connect with the EXISTING session (the account being sold).
-    #   2. Record the latest message ID from Telegram service (777000) BEFORE
-    #      triggering the OTP, so we only pick up the NEW message.
-    #   3. Use a SEPARATE anonymous client to call send_code_request, which
-    #      causes Telegram to deliver the OTP to the session account's inbox.
-    #   4. Poll the session client for a message from 777000 that is newer
-    #      than the recorded ID and contains a 5-6 digit code.
-    #   5. Forward the code to the buyer.
+    # ── Step 1: send phone number to buyer immediately ────────────────────────
+    await ctx.bot.send_message(
+        user_id,
+        f"📱 *Your Account Phone Number:*\n\n"
+        f"`{phone}`\n\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"*How to login:*\n"
+        f"1️⃣ Open Telegram on any device\n"
+        f"2️⃣ Enter the phone number above\n"
+        f"3️⃣ Telegram will send an OTP to this account\n"
+        f"4️⃣ I will automatically forward the OTP to you here ⬇️\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"⏳ *Waiting for OTP... (up to 5 minutes)*",
+        parse_mode="Markdown"
+    )
+
+    # ── Step 2: passively watch the account inbox for the OTP ────────────────
+    # The user enters the phone number on their device → Telegram delivers the
+    # OTP as a message from 777000 into the account's inbox.
+    # We just poll and wait — we do NOT trigger anything ourselves.
     try:
         import re
         import asyncio
+        from datetime import datetime, timezone
         from telethon import TelegramClient
         from telethon.sessions import StringSession
         from telethon.tl.functions.messages import GetHistoryRequest
 
-        # ── Step 1: connect with the sold account's session ──────────────────
         session_client = TelegramClient(StringSession(acc["session"]), API_ID, API_HASH)
         await session_client.connect()
 
-        # ── Step 2: record the time just before triggering OTP ───────────────
-        from datetime import datetime, timezone
-        otp_trigger_time = datetime.now(timezone.utc)
-
-        # ── Step 3: trigger OTP using a fresh anonymous client ───────────────
-        anon_client = TelegramClient(StringSession(), API_ID, API_HASH)
-        await anon_client.connect()
+        # Record the current latest message ID from 777000 as baseline,
+        # so we only forward a message that arrives AFTER the purchase.
+        baseline_id = 0
         try:
-            await anon_client.send_code_request(phone)
-        except Exception as trigger_err:
-            logger.warning(f"OTP trigger warning (may be normal): {trigger_err}")
-        finally:
-            await anon_client.disconnect()
+            service_peer = await session_client.get_input_entity(777000)
+            history = await session_client(GetHistoryRequest(
+                peer=service_peer,
+                limit=1,
+                offset_date=None, offset_id=0,
+                max_id=0, min_id=0, add_offset=0, hash=0
+            ))
+            if history.messages:
+                baseline_id = history.messages[0].id
+        except Exception as baseline_err:
+            logger.warning(f"Baseline read error: {baseline_err}")
 
-        # ── Step 4: poll session client for the new OTP message ──────────────
+        # Poll for up to 5 minutes (user needs time to open Telegram and enter number)
         otp_code = None
-        service_peer = await session_client.get_input_entity(777000)
-        deadline = asyncio.get_event_loop().time() + 60  # wait up to 60 s
+        deadline = asyncio.get_event_loop().time() + 300  # 5 minutes
 
         while asyncio.get_event_loop().time() < deadline:
-            await asyncio.sleep(3)
+            await asyncio.sleep(4)
             try:
                 history = await session_client(GetHistoryRequest(
                     peer=service_peer,
@@ -554,11 +565,8 @@ async def confirm_buy(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                     max_id=0, min_id=0, add_offset=0, hash=0
                 ))
                 for msg in history.messages:
-                    # Only accept messages that arrived AFTER we triggered the OTP
-                    # (within 40 seconds = fresh OTP, not an old one)
-                    msg_time = msg.date  # already a timezone-aware datetime
-                    age_seconds = (datetime.now(timezone.utc) - msg_time).total_seconds()
-                    if age_seconds > 40:
+                    # Only messages newer than what existed at purchase time
+                    if msg.id <= baseline_id:
                         continue
                     text = getattr(msg, "message", "") or ""
                     match = re.search(r'\b(\d{5,6})\b', text)
@@ -572,57 +580,40 @@ async def confirm_buy(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
         await session_client.disconnect()
 
-        # ── Step 5: send result to buyer ─────────────────────────────────────
         if otp_code:
             await ctx.bot.send_message(
                 user_id,
-                f"✅ *Your Account is Ready!*\n\n"
+                f"🔐 *Your OTP has arrived!*\n\n"
                 f"━━━━━━━━━━━━━━━━━━━━━━\n"
-                f"📱 *Phone Number:*\n`{phone}`\n\n"
-                f"🔐 *Login OTP:*\n`{otp_code}`\n\n"
+                f"📱 Phone: `{phone}`\n"
+                f"🔑 OTP Code: `{otp_code}`\n"
                 f"━━━━━━━━━━━━━━━━━━━━━━\n"
-                f"*How to login:*\n"
-                f"1️⃣ Open Telegram on any device\n"
-                f"2️⃣ Enter the phone number above\n"
-                f"3️⃣ Enter the OTP code above\n"
-                f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"⚠️ Enter this code in Telegram now.\n"
                 f"⚠️ OTP expires in a few minutes.\n"
                 f"⚠️ Do *not* share these details.",
                 parse_mode="Markdown"
             )
         else:
-            # OTP didn't arrive in time — send phone + instructions
+            # User took too long or OTP went to SMS instead
             await ctx.bot.send_message(
                 user_id,
-                f"✅ *Your Account is Ready!*\n\n"
-                f"━━━━━━━━━━━━━━━━━━━━━━\n"
-                f"📱 *Phone Number:*\n`{phone}`\n\n"
-                f"📩 An OTP has been sent to this number.\n\n"
-                f"━━━━━━━━━━━━━━━━━━━━━━\n"
-                f"*How to login:*\n"
-                f"1️⃣ Open Telegram on any device\n"
-                f"2️⃣ Enter the phone number above\n"
-                f"3️⃣ Enter the OTP you received\n"
-                f"━━━━━━━━━━━━━━━━━━━━━━\n"
-                f"⚠️ Do *not* share these details.",
-                parse_mode="Markdown"
+                f"⏰ *OTP not detected automatically.*\n\n"
+                f"This can happen if Telegram sent the code via SMS instead.\n\n"
+                f"📱 Phone: `{phone}`\n\n"
+                f"Please check your SMS or contact support.",
+                parse_mode="Markdown",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🆘 Support", url=f"https://t.me/{SUPPORT_USERNAME}")]
+                ])
             )
 
     except Exception as e:
-        logger.error(f"OTP send failed for account #{acc_id}: {e}\n{traceback.format_exc()}")
+        logger.error(f"OTP watcher failed for account #{acc_id}: {e}\n{traceback.format_exc()}")
         await ctx.bot.send_message(
             user_id,
-            f"✅ *Your Account is Ready!*\n\n"
-            f"━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"📱 *Phone Number:*\n`{phone}`\n\n"
-            f"━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"*How to login:*\n"
-            f"1️⃣ Open Telegram on any device\n"
-            f"2️⃣ Enter the phone number above\n"
-            f"3️⃣ Request OTP — it will arrive via SMS\n"
-            f"━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"⚠️ Do *not* share these details.\n\n"
-            f"Need help? Contact 🆘 Support.",
+            f"⚠️ *OTP auto-detection failed.*\n\n"
+            f"📱 Phone: `{phone}`\n\n"
+            f"Please request the OTP manually on Telegram and contact support if you need help.",
             parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("🆘 Support", url=f"https://t.me/{SUPPORT_USERNAME}")]
