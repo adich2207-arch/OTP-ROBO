@@ -49,9 +49,11 @@ def init_db():
             id BIGSERIAL PRIMARY KEY, user_id BIGINT, amount NUMERIC(12,2),
             status TEXT DEFAULT 'pending', created_at TIMESTAMPTZ DEFAULT NOW())""")
         conn.execute("""CREATE TABLE IF NOT EXISTS accounts (
-            id BIGSERIAL PRIMARY KEY, session TEXT, price NUMERIC(12,2),
+            id BIGSERIAL PRIMARY KEY, session TEXT, phone TEXT DEFAULT '',
+            price NUMERIC(12,2),
             status TEXT DEFAULT 'available', buyer_id BIGINT DEFAULT NULL,
             created_at TIMESTAMPTZ DEFAULT NOW())""")
+        conn.execute("ALTER TABLE accounts ADD COLUMN IF NOT EXISTS phone TEXT DEFAULT ''")
         conn.execute("""CREATE TABLE IF NOT EXISTS referral_earnings (
             id BIGSERIAL PRIMARY KEY, referrer_id BIGINT, referred_id BIGINT,
             deposit_id BIGINT, commission NUMERIC(12,2),
@@ -351,8 +353,9 @@ async def set_price(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return ADMIN_ADD_PRICE
     with get_db() as conn:
         acc_id = conn.execute(
-            "INSERT INTO accounts (session, price) VALUES (%s,%s) RETURNING id",
-            (ctx.user_data["session"], price)).fetchone()["id"]
+            "INSERT INTO accounts (session, phone, price) VALUES (%s,%s,%s) RETURNING id",
+            (ctx.user_data["session"], ctx.user_data.get("phone", ""), price)
+        ).fetchone()["id"]
     await update.message.reply_text(
         f"🎉 *Account #{acc_id} Added!*\n\n💵 Price: *${price:.2f}*\n🟢 Now visible in the marketplace.",
         parse_mode="Markdown")
@@ -471,17 +474,66 @@ async def confirm_buy(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                     [InlineKeyboardButton("🔙 Back",        callback_data="menu_back")]])); return
         conn.execute("UPDATE users SET balance=balance-%s WHERE user_id=%s", (acc["price"], user_id))
         conn.execute("UPDATE accounts SET status='sold', buyer_id=%s WHERE id=%s", (user_id, acc_id))
+
     await query.edit_message_text(
         f"🎉 *Purchase Successful!*\n\n🔑 Account *#{acc_id}* is yours!\n💵 Paid: *${acc['price']:.2f}*\n\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━\nYour session string has been sent in a private message. 👇\n━━━━━━━━━━━━━━━━━━━━━━",
-        parse_mode="Markdown", reply_markup=main_menu_keyboard())
-    await ctx.bot.send_message(user_id,
-        f"🔑 *Your Account Session*\n\nAccount *#{acc_id}* — Paid: *${acc['price']:.2f}*\n\n"
-        f"```\n{acc['session']}\n```\n\n━━━━━━━━━━━━━━━━━━━━━━\n⚠️ Keep this safe. Do *not* share it.\n━━━━━━━━━━━━━━━━━━━━━━",
+        f"━━━━━━━━━━━━━━━━━━━━━━\n⏳ Requesting OTP for your account...\n━━━━━━━━━━━━━━━━━━━━━━",
         parse_mode="Markdown")
+
+    # Send phone number first
+    phone = acc.get("phone", "")
+    if phone:
+        await ctx.bot.send_message(user_id,
+            f"📱 *Account Phone Number*\n\n`{phone}`\n\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n⏳ Requesting a fresh OTP now...",
+            parse_mode="Markdown")
+
+    # Request fresh OTP using the stored session
+    otp_sent = False
+    try:
+        from telethon import TelegramClient
+        from telethon.sessions import StringSession
+        client = TelegramClient(StringSession(acc["session"]), API_ID, API_HASH)
+        await client.connect()
+        result = await client.send_code_request(phone)
+        # Store for potential re-request — we just need to notify buyer OTP was sent
+        await client.disconnect()
+        otp_sent = True
+        await ctx.bot.send_message(user_id,
+            f"📩 *OTP Sent to {phone}*\n\n"
+            f"A login OTP has been sent to the account's phone number.\n\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"📋 *Account Details*\n"
+            f"📱 Phone: `{phone}`\n\n"
+            f"🔑 *Session String* (for Telethon/Pyrogram):\n"
+            f"```\n{acc['session']}\n```\n\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"⚠️ Keep these safe. Do *not* share them.\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━",
+            parse_mode="Markdown")
+    except Exception as e:
+        logger.error(f"OTP request failed for account #{acc_id}: {e}")
+        # Still send session string even if OTP fails
+        await ctx.bot.send_message(user_id,
+            f"🔑 *Your Account Details*\n\n"
+            f"Account *#{acc_id}* — Paid: *${acc['price']:.2f}*\n\n"
+            + (f"📱 Phone: `{phone}`\n\n" if phone else "")
+            + f"🔑 *Session String:*\n```\n{acc['session']}\n```\n\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"⚠️ OTP auto-request failed. Use the session string directly.\n"
+            f"⚠️ Keep these safe. Do *not* share them.\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━",
+            parse_mode="Markdown")
+
     await ctx.bot.send_message(ADMIN_ID,
-        f"💸 *Account Sold*\n\n🔑 Account *#{acc_id}* sold to `{user_id}` for *${acc['price']:.2f}*.",
+        f"💸 *Account Sold*\n\n🔑 Account *#{acc_id}* sold to `{user_id}` for *${acc['price']:.2f}*."
+        + (f"\n📩 OTP {'sent' if otp_sent else 'failed — session delivered instead'}." ),
         parse_mode="Markdown")
+
+    # Update the purchase message with menu
+    await ctx.bot.send_message(user_id,
+        f"✅ *All done!* Check the messages above for your account details.",
+        reply_markup=main_menu_keyboard())
 
 # ── WALLET / REFER / WITHDRAW ─────────────────────────────────────────────────
 async def show_balance(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
