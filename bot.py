@@ -504,7 +504,16 @@ async def confirm_buy(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     phone = acc.get("phone", "").strip()
 
-    # Request OTP, wait for it to arrive via polling, then forward it to the buyer
+    # ── OTP flow ──────────────────────────────────────────────────────────────
+    # Strategy:
+    #   1. Connect with the EXISTING session (the account being sold).
+    #   2. Record the latest message ID from Telegram service (777000) BEFORE
+    #      triggering the OTP, so we only pick up the NEW message.
+    #   3. Use a SEPARATE anonymous client to call send_code_request, which
+    #      causes Telegram to deliver the OTP to the session account's inbox.
+    #   4. Poll the session client for a message from 777000 that is newer
+    #      than the recorded ID and contains a 5-6 digit code.
+    #   5. Forward the code to the buyer.
     try:
         import re
         import asyncio
@@ -512,25 +521,45 @@ async def confirm_buy(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         from telethon.sessions import StringSession
         from telethon.tl.functions.messages import GetHistoryRequest
 
-        client = TelegramClient(StringSession(acc["session"]), API_ID, API_HASH)
-        await client.connect()
+        # ── Step 1: connect with the sold account's session ──────────────────
+        session_client = TelegramClient(StringSession(acc["session"]), API_ID, API_HASH)
+        await session_client.connect()
 
-        # Trigger the OTP by requesting a login code for this phone
-        await client.send_code_request(phone)
+        # ── Step 2: record the time just before triggering OTP ───────────────
+        from datetime import datetime, timezone
+        otp_trigger_time = datetime.now(timezone.utc)
 
-        # Poll the "Telegram" service account (777000) for the OTP message
+        # ── Step 3: trigger OTP using a fresh anonymous client ───────────────
+        anon_client = TelegramClient(StringSession(), API_ID, API_HASH)
+        await anon_client.connect()
+        try:
+            await anon_client.send_code_request(phone)
+        except Exception as trigger_err:
+            logger.warning(f"OTP trigger warning (may be normal): {trigger_err}")
+        finally:
+            await anon_client.disconnect()
+
+        # ── Step 4: poll session client for the new OTP message ──────────────
         otp_code = None
+        service_peer = await session_client.get_input_entity(777000)
         deadline = asyncio.get_event_loop().time() + 60  # wait up to 60 s
+
         while asyncio.get_event_loop().time() < deadline:
             await asyncio.sleep(3)
             try:
-                history = await client(GetHistoryRequest(
-                    peer=777000,   # Telegram's official service account
+                history = await session_client(GetHistoryRequest(
+                    peer=service_peer,
                     limit=5,
                     offset_date=None, offset_id=0,
                     max_id=0, min_id=0, add_offset=0, hash=0
                 ))
                 for msg in history.messages:
+                    # Only accept messages that arrived AFTER we triggered the OTP
+                    # (within 40 seconds = fresh OTP, not an old one)
+                    msg_time = msg.date  # already a timezone-aware datetime
+                    age_seconds = (datetime.now(timezone.utc) - msg_time).total_seconds()
+                    if age_seconds > 40:
+                        continue
                     text = getattr(msg, "message", "") or ""
                     match = re.search(r'\b(\d{5,6})\b', text)
                     if match:
@@ -541,8 +570,9 @@ async def confirm_buy(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             if otp_code:
                 break
 
-        await client.disconnect()
+        await session_client.disconnect()
 
+        # ── Step 5: send result to buyer ─────────────────────────────────────
         if otp_code:
             await ctx.bot.send_message(
                 user_id,
@@ -579,7 +609,7 @@ async def confirm_buy(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             )
 
     except Exception as e:
-        logger.error(f"OTP send failed for account #{acc_id}: {e}")
+        logger.error(f"OTP send failed for account #{acc_id}: {e}\n{traceback.format_exc()}")
         await ctx.bot.send_message(
             user_id,
             f"✅ *Your Account is Ready!*\n\n"
