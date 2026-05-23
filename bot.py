@@ -299,12 +299,13 @@ async def get_phone(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             parse_mode="Markdown")
         return ConversationHandler.END
     try:
-        from pyrofork import Client
-        client = Client(name=":memory:", api_id=API_ID, api_hash=API_HASH, in_memory=True)
+        from telethon import TelegramClient
+        from telethon.sessions import StringSession
+        client = TelegramClient(StringSession(), API_ID, API_HASH)
         await client.connect()
-        sent = await client.send_code(phone)
+        result = await client.send_code_request(phone)
         ctx.user_data["client"] = client
-        ctx.user_data["phone_code_hash"] = sent.phone_code_hash
+        ctx.user_data["phone_code_hash"] = result.phone_code_hash
         await update.message.reply_text(
             "📩 *OTP sent!*\n\nEnter the OTP you received _(digits only, e.g. `12345`)_:",
             parse_mode="Markdown")
@@ -327,10 +328,11 @@ async def get_otp(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Session expired. Run /login_account again.")
         return ConversationHandler.END
     try:
-        await client.sign_in(phone, code_hash, otp)
-        session = await client.export_session_string()
+        from telethon.sessions import StringSession
+        await client.sign_in(phone, otp, phone_code_hash=code_hash)
+        session_string = client.session.save()
         await client.disconnect()
-        ctx.user_data["session"] = session
+        ctx.user_data["session"] = session_string
         await update.message.reply_text(
             "✅ *Login successful!*\n\n💵 Now enter the price for this account (e.g. `25`):",
             parse_mode="Markdown")
