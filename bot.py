@@ -103,9 +103,24 @@ def back_keyboard():
     return InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back to Menu", callback_data="menu_back")]])
 
 
+# ── PTB error handler (logs ALL handler exceptions to console) ────────────────
+async def error_handler(update: object, ctx: ContextTypes.DEFAULT_TYPE):
+    logger.error("Exception while handling update:", exc_info=ctx.error)
+    logger.error(traceback.format_exc())
+    # Try to notify the user something went wrong
+    try:
+        if isinstance(update, Update) and update.effective_message:
+            await update.effective_message.reply_text(
+                "⚠️ Something went wrong. Please try again or contact support."
+            )
+    except Exception:
+        pass
+
+
 # ── /start ────────────────────────────────────────────────────────────────────
 async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
+    logger.info(f"/start from user_id={user.id} username={user.username}")
     referred_by = None
     if ctx.args and ctx.args[0].startswith("ref_"):
         try:
@@ -114,7 +129,10 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 referred_by = ref_id
         except (IndexError, ValueError):
             pass
-    ensure_user(user.id, user.username or "", referred_by)
+    try:
+        ensure_user(user.id, user.username or "", referred_by)
+    except Exception as e:
+        logger.error(f"ensure_user failed: {e}\n{traceback.format_exc()}")
     if referred_by:
         try:
             await ctx.bot.send_message(referred_by,
@@ -734,6 +752,7 @@ def build_app() -> Application:
     app.add_handler(CommandHandler("start",    start))
     app.add_handler(deposit_conv)
     app.add_handler(login_conv)
+    app.add_error_handler(error_handler)
     app.add_handler(CommandHandler("accounts", admin_accounts))
     app.add_handler(CommandHandler("users",    admin_users))
     app.add_handler(CommandHandler("pending",  admin_pending))
@@ -769,6 +788,7 @@ def main():
     @flask_app.post(f"/webhook/{BOT_TOKEN}")
     def webhook():
         data   = request.get_json(force=True)
+        logger.info(f"Webhook received update: {data.get('update_id')} type={list(data.keys())}")
         update = Update.de_json(data, ptb_app.bot)
         # Fire-and-forget: do NOT block waiting for the result.
         # Blocking with future.result() causes timeouts when handlers
