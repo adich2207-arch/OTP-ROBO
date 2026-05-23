@@ -574,18 +574,24 @@ def main():
 
     @flask_app.post(f"/webhook/{BOT_TOKEN}")
     def webhook():
-        import asyncio
         data = request.get_json(force=True)
-        asyncio.run(ptb_app.process_update(Update.de_json(data, ptb_app.bot)))
+        update = Update.de_json(data, ptb_app.bot)
+        loop.run_until_complete(ptb_app.process_update(update))
         return Response("ok", status=200)
 
     import asyncio
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+
     async def setup():
         await ptb_app.initialize()
-        await ptb_app.bot.set_webhook(f"{WEBHOOK_URL}/webhook/{BOT_TOKEN}")
+        await ptb_app.bot.set_webhook(
+            f"{WEBHOOK_URL}/webhook/{BOT_TOKEN}",
+            drop_pending_updates=True   # ignore queued updates on restart
+        )
         logger.info(f"Webhook set: {WEBHOOK_URL}/webhook/{BOT_TOKEN}")
 
-    asyncio.run(setup())
+    loop.run_until_complete(setup())
     logger.info(f"Starting on port {PORT}")
     flask_app.run(host="0.0.0.0", port=PORT)
 
