@@ -5,7 +5,6 @@ from psycopg.rows import dict_row
 from dotenv import load_dotenv
 load_dotenv()
 
-from flask import Flask, request, Response
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application, CommandHandler, CallbackQueryHandler,
@@ -14,8 +13,6 @@ from telegram.ext import (
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-
-flask_app = Flask(__name__)
 
 # ── Config ────────────────────────────────────────────────────────────────────
 BOT_TOKEN        = os.getenv("BOT_TOKEN")
@@ -466,14 +463,24 @@ async def get_phone(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data["phone"] = phone
     await update.message.reply_text("⏳ Sending OTP...")
 
+    # Validate API credentials before attempting connection
+    if not API_ID or not API_HASH:
+        await update.message.reply_text(
+            "❌ *Configuration Error*\n\n"
+            "`API_ID` or `API_HASH` is not set.\n\n"
+            "Please add them to your Render environment variables.",
+            parse_mode="Markdown"
+        )
+        return ConversationHandler.END
+
     try:
+        import traceback
         from pyrofork import Client
-        from pyrofork.storage import MemoryStorage
         client = Client(
-            name="temp_session",
+            name=":memory:",
             api_id=API_ID,
             api_hash=API_HASH,
-            storage=MemoryStorage("temp_session")
+            in_memory=True
         )
         await client.connect()
         sent = await client.send_code(phone)
@@ -486,8 +493,15 @@ async def get_phone(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
         return ADMIN_OTP
     except Exception as e:
+        tb = traceback.format_exc()
+        logger.error(f"OTP send failed for {phone}:\n{tb}")
         await update.message.reply_text(
-            f"❌ *Failed to send OTP*\n\n`{e}`\n\n"
+            f"❌ *Failed to send OTP*\n\n"
+            f"*Error:* `{type(e).__name__}: {e}`\n\n"
+            f"*Debug info:*\n"
+            f"• API\\_ID set: `{'Yes' if API_ID else 'No'}`\n"
+            f"• API\\_HASH set: `{'Yes' if API_HASH else 'No'}`\n"
+            f"• Phone: `{phone}`\n\n"
             f"Make sure API\\_ID and API\\_HASH are set correctly in Render env vars.",
             parse_mode="Markdown"
         )
@@ -895,32 +909,44 @@ def build_app() -> Application:
 
     return app
 
-def main():
+async def run():
+    """Single async entry point — no event loop conflicts."""
     global ptb_app
     init_db()
     ptb_app = build_app()
 
-    @flask_app.get("/")
-    def health():
-        return Response("OK", status=200)
+    await ptb_app.initialize()
+    await ptb_app.bot.set_webhook(f"{WEBHOOK_URL}/webhook/{BOT_TOKEN}")
+    logger.info(f"Webhook set: {WEBHOOK_URL}/webhook/{BOT_TOKEN}")
 
-    @flask_app.post(f"/webhook/{BOT_TOKEN}")
-    def webhook():
-        import asyncio
-        data = request.get_json(force=True)
+    from starlette.applications import Starlette
+    from starlette.requests import Request as StarletteRequest
+    from starlette.responses import PlainTextResponse
+    from starlette.routing import Route
+
+    async def health(req: StarletteRequest):
+        return PlainTextResponse("OK")
+
+    async def webhook(req: StarletteRequest):
+        data = await req.json()
         upd  = Update.de_json(data, ptb_app.bot)
-        asyncio.run(ptb_app.process_update(upd))
-        return Response("ok", status=200)
+        await ptb_app.process_update(upd)
+        return PlainTextResponse("ok")
 
+    asgi_app = Starlette(routes=[
+        Route("/", health),
+        Route(f"/webhook/{BOT_TOKEN}", webhook, methods=["POST"]),
+    ])
+
+    import uvicorn
+    config = uvicorn.Config(asgi_app, host="0.0.0.0", port=PORT, log_level="info")
+    server = uvicorn.Server(config)
+    logger.info(f"Starting uvicorn on port {PORT}")
+    await server.serve()
+
+def main():
     import asyncio
-    async def setup():
-        await ptb_app.initialize()
-        await ptb_app.bot.set_webhook(f"{WEBHOOK_URL}/webhook/{BOT_TOKEN}")
-        logger.info(f"Webhook set: {WEBHOOK_URL}/webhook/{BOT_TOKEN}")
-
-    asyncio.run(setup())
-    logger.info(f"Starting on port {PORT}")
-    flask_app.run(host="0.0.0.0", port=PORT)
+    asyncio.run(run())
 
 if __name__ == "__main__":
     main()
