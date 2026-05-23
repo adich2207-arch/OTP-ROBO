@@ -777,22 +777,50 @@ def main():
     ptb_app = build_app()
 
     import asyncio
+    import threading
 
-    async def run():
-        # Delete any stale webhook and pending updates first
+    # Create a dedicated event loop that runs in a background thread.
+    # Flask runs in the main thread; all async PTB work runs on this loop.
+    loop = asyncio.new_event_loop()
+
+    def run_loop():
+        asyncio.set_event_loop(loop)
+        loop.run_forever()
+
+    t = threading.Thread(target=run_loop, daemon=True)
+    t.start()
+
+    # Store loop so confirm_buy can schedule the OTP watcher on it
+    flask_app.config["ASYNCIO_LOOP"] = loop
+
+    @flask_app.get("/")
+    def health():
+        return Response("OK", status=200)
+
+    @flask_app.post(f"/webhook/{BOT_TOKEN}")
+    def webhook():
+        data   = request.get_json(force=True)
+        logger.info(f"Update {data.get('update_id')} | {list(data.keys())}")
+        update = Update.de_json(data, ptb_app.bot)
+        # Fire-and-forget — never block the webhook thread
+        asyncio.run_coroutine_threadsafe(ptb_app.process_update(update), loop)
+        return Response("ok", status=200)
+
+    async def setup():
+        await ptb_app.initialize()
+        # Clear any stale webhook/pending updates, then set fresh webhook
         await ptb_app.bot.delete_webhook(drop_pending_updates=True)
-        logger.info("Old webhook cleared.")
-
-        # Use PTB's built-in webhook runner — handles everything correctly
-        await ptb_app.run_webhook(
-            listen="0.0.0.0",
-            port=PORT,
-            webhook_url=f"{WEBHOOK_URL}/webhook/{BOT_TOKEN}",
-            url_path=f"/webhook/{BOT_TOKEN}",
+        await ptb_app.bot.set_webhook(
+            url=f"{WEBHOOK_URL}/webhook/{BOT_TOKEN}",
             drop_pending_updates=True,
+            allowed_updates=["message", "callback_query"],
         )
+        logger.info(f"✅ Webhook set → {WEBHOOK_URL}/webhook/{BOT_TOKEN}")
 
-    asyncio.run(run())
+    asyncio.run_coroutine_threadsafe(setup(), loop).result(timeout=30)
+
+    logger.info(f"🚀 Starting Flask on port {PORT}")
+    flask_app.run(host="0.0.0.0", port=PORT)
 
 if __name__ == "__main__":
     main()
