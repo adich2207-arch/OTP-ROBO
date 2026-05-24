@@ -59,6 +59,11 @@ def init_db():
             id BIGSERIAL PRIMARY KEY, referrer_id BIGINT, referred_id BIGINT,
             deposit_id BIGINT, commission NUMERIC(12,2),
             created_at TIMESTAMPTZ DEFAULT NOW())""")
+        conn.execute("""CREATE TABLE IF NOT EXISTS country_prices (
+            country_code TEXT PRIMARY KEY,
+            country_name TEXT NOT NULL,
+            price        NUMERIC(12,2) NOT NULL,
+            updated_at   TIMESTAMPTZ DEFAULT NOW())""")
     logger.info("✅ Database initialised.")
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -725,30 +730,155 @@ async def confirm_buy(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         parse_mode="Markdown"
     )
 
+
+# ── PRICES ────────────────────────────────────────────────────────────────────
+async def cmd_prices(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Public command — anyone can check payout prices."""
+    with get_db() as conn:
+        rows = conn.execute(
+            "SELECT country_code, country_name, price FROM country_prices ORDER BY country_name ASC"
+        ).fetchall()
+    if not rows:
+        await update.message.reply_text(
+            "No prices set yet. Contact support for details.",
+            reply_markup=main_menu_keyboard())
+        return
+    lines = ["<b>Account Payout Prices</b>", "=" * 30]
+    for r in rows:
+        lines.append(
+            f"<b>{r['country_name']}</b> (<code>{r['country_code']}</code>)"
+            f"  —  <b>${r['price']:.2f}</b>"
+        )
+    lines.append("\nWant to sell? Tap Sell Account in the menu.")
+    await update.message.reply_text(
+        "\n".join(lines), parse_mode="HTML", reply_markup=main_menu_keyboard())
+
+
+async def admin_set_price_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Set or update a country price.
+    Usage: /setprice US 5.00 United States
+    """
+    if update.effective_user.id != ADMIN_ID:
+        return
+    try:
+        parts = update.message.text.strip().split(None, 3)
+        code  = parts[1].upper()
+        price = float(parts[2])
+        name  = parts[3]
+        if price <= 0:
+            raise ValueError
+    except (IndexError, ValueError):
+        await update.message.reply_text(
+            "Usage: /setprice &lt;code&gt; &lt;price&gt; &lt;Country Name&gt;\n"
+            "Example: /setprice US 5.00 United States",
+            parse_mode="HTML")
+        return
+    with get_db() as conn:
+        conn.execute(
+            "INSERT INTO country_prices (country_code, country_name, price) VALUES (%s,%s,%s)"
+            " ON CONFLICT (country_code) DO UPDATE SET country_name=%s, price=%s, updated_at=NOW()",
+            (code, name, price, name, price)
+        )
+    await update.message.reply_text(
+        f"<b>{name}</b> (<code>{code}</code>) set to <b>${price:.2f}</b>",
+        parse_mode="HTML")
+
+
+async def admin_del_price_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Remove a country price. Usage: /delprice US"""
+    if update.effective_user.id != ADMIN_ID:
+        return
+    try:
+        code = update.message.text.strip().split()[1].upper()
+    except IndexError:
+        await update.message.reply_text("Usage: /delprice &lt;code&gt;  e.g. /delprice US", parse_mode="HTML")
+        return
+    with get_db() as conn:
+        conn.execute("DELETE FROM country_prices WHERE country_code=%s", (code,))
+    await update.message.reply_text(f"Price for <code>{code}</code> removed.", parse_mode="HTML")
+
+
+async def admin_list_prices_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Admin: list all prices with edit commands."""
+    if update.effective_user.id != ADMIN_ID:
+        return
+    with get_db() as conn:
+        rows = conn.execute(
+            "SELECT country_code, country_name, price FROM country_prices ORDER BY country_name ASC"
+        ).fetchall()
+    if not rows:
+        await update.message.reply_text("No prices set yet. Use /setprice to add one.")
+        return
+    lines = [f"<b>All Country Prices ({len(rows)})</b>", "=" * 30]
+    for r in rows:
+        lines.append(
+            f"<b>{r['country_name']}</b> <code>{r['country_code']}</code>"
+            f" — <b>${r['price']:.2f}</b>\n"
+            f"  Edit: <code>/setprice {r['country_code']} {r['price']:.2f} {r['country_name']}</code>\n"
+            f"  Remove: <code>/delprice {r['country_code']}</code>"
+        )
+    await update.message.reply_text("\n".join(lines), parse_mode="HTML")
+
+
 # ── SELL FLOW ─────────────────────────────────────────────────────────────────
 async def sell_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Entry point — shown when user taps Sell Account button."""
     query = update.callback_query
     await query.answer()
     await query.edit_message_text(
-        f"╔══════════════════════╗\n     💰 <b>SELL ACCOUNT</b>\n╚══════════════════════╝\n\n"
-        f"Want to sell your Telegram account?\n\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"📋 <b>How it works:</b>\n"
-        f"  1️⃣ Enter your phone number\n"
-        f"  2️⃣ Enter the OTP sent to your account\n"
-        f"  3️⃣ We verify &amp; list it for sale\n"
-        f"  4️⃣ Get paid when it sells!\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        f"� Please send your phone number with country code.\n"
-        f"Example: <code>+12345678900</code>\n\n"
-        f"Or tap Back to cancel.",
+        "<b>SELL ACCOUNT</b>\n\n"
+        "Want to sell your Telegram account and earn money?\n\n"
+        "Check /prices to see how much we pay per country.\n\n"
+        "<b>How to sell:</b>\n"
+        "1. Check /prices for your country\n"
+        "2. Send your phone number below\n"
+        "3. Enter the OTP we send you\n"
+        "4. We verify and list your account\n"
+        "5. Get paid when it sells!\n\n"
+        "Ready? Send your phone number with country code.\n"
+        "Example: <code>+12345678900</code>\n\n"
+        "Type /cancel to go back.",
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("🔙 Back to Menu", callback_data="menu_back")]
+            [InlineKeyboardButton("View Prices", callback_data="sell_prices")],
+            [InlineKeyboardButton("Back to Menu", callback_data="menu_back")]
         ])
     )
     return SELL_PHONE
+
+
+async def sell_prices_inline(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Show prices from inline button inside sell conversation."""
+    query = update.callback_query
+    await query.answer()
+    with get_db() as conn:
+        rows = conn.execute(
+            "SELECT country_code, country_name, price FROM country_prices ORDER BY country_name ASC"
+        ).fetchall()
+    if not rows:
+        await query.answer("No prices set yet. Contact support.", show_alert=True)
+        return SELL_PHONE
+    lines = ["<b>Account Payout Prices</b>", "=" * 30]
+    for r in rows:
+        lines.append(
+            f"<b>{r['country_name']}</b> (<code>{r['country_code']}</code>)"
+            f" — <b>${r['price']:.2f}</b>"
+        )
+    lines.append("\nSend your phone number to proceed.")
+    await query.edit_message_text(
+        "\n".join(lines),
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("Back", callback_data="sell_back")]
+        ])
+    )
+    return SELL_PHONE
+
+
+async def sell_back_inline(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Go back to sell menu from prices view."""
+    return await sell_menu(update, ctx)
+
 
 async def sell_get_phone(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """User sent their phone number — send OTP via Telethon."""
@@ -921,8 +1051,12 @@ def build_app() -> Application:
     sell_conv = ConversationHandler(
         entry_points=[CallbackQueryHandler(sell_menu, pattern="^menu_sell$")],
         states={
-            SELL_PHONE: [MessageHandler(filters.TEXT & ~filters.COMMAND, sell_get_phone)],
-            SELL_OTP:   [MessageHandler(filters.TEXT & ~filters.COMMAND, sell_get_otp)],
+            SELL_PHONE: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, sell_get_phone),
+                CallbackQueryHandler(sell_prices_inline, pattern="^sell_prices$"),
+                CallbackQueryHandler(sell_back_inline,   pattern="^sell_back$"),
+            ],
+            SELL_OTP: [MessageHandler(filters.TEXT & ~filters.COMMAND, sell_get_otp)],
         },
         fallbacks=[
             CommandHandler("cancel", sell_cancel),
@@ -940,7 +1074,11 @@ def build_app() -> Application:
     app.add_handler(CommandHandler("pending",  admin_pending))
     app.add_handler(CommandHandler("credit",   admin_credit))
     app.add_handler(CommandHandler("deduct",   admin_deduct))
-    app.add_handler(CommandHandler("add_sell", admin_add_sell))
+    app.add_handler(CommandHandler("add_sell",    admin_add_sell))
+    app.add_handler(CommandHandler("prices",      cmd_prices))
+    app.add_handler(CommandHandler("setprice",    admin_set_price_cmd))
+    app.add_handler(CommandHandler("delprice",    admin_del_price_cmd))
+    app.add_handler(CommandHandler("listprices",  admin_list_prices_cmd))
     app.add_handler(MessageHandler(filters.Regex(r"^/approve_\d+$") & filters.User(ADMIN_ID), admin_approve))
     app.add_handler(MessageHandler(filters.Regex(r"^/reject_\d+$")  & filters.User(ADMIN_ID), admin_reject))
     app.add_handler(MessageHandler(filters.Regex(r"^/del_\d+$")     & filters.User(ADMIN_ID), admin_delete))
