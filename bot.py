@@ -104,13 +104,13 @@ PE_SUPPORT  = "6296577138615125756"
 # ── Keyboards ─────────────────────────────────────────────────────────────────
 def main_menu_keyboard():
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton(f"{pe(PE_BUY,'🛒')} Buy Account",   callback_data="menu_buy"),
-         InlineKeyboardButton(f"{pe(PE_SELL,'💰')} Sell Account",  callback_data="menu_sell")],
-        [InlineKeyboardButton(f"{pe(PE_RECHARGE,'💵')} Recharge",  callback_data="menu_deposit"),
-         InlineKeyboardButton(f"{pe(PE_WITHDRAW,'💸')} Withdraw",  callback_data="menu_withdraw")],
-        [InlineKeyboardButton(f"{pe(PE_WALLET,'📊')} My Wallet",   callback_data="menu_balance"),
-         InlineKeyboardButton(f"{pe(PE_REFER,'👥')} Refer & Earn", callback_data="menu_refer")],
-        [InlineKeyboardButton(f"{pe(PE_SUPPORT,'🆘')} Support",    url=f"https://t.me/{SUPPORT_USERNAME}")],
+        [InlineKeyboardButton("🛒 Buy Account",   callback_data="menu_buy"),
+         InlineKeyboardButton("💰 Sell Account",  callback_data="menu_sell")],
+        [InlineKeyboardButton("💵 Recharge",      callback_data="menu_deposit"),
+         InlineKeyboardButton("💸 Withdraw",      callback_data="menu_withdraw")],
+        [InlineKeyboardButton("📊 My Wallet",     callback_data="menu_balance"),
+         InlineKeyboardButton("👥 Refer & Earn",  callback_data="menu_refer")],
+        [InlineKeyboardButton("🆘 Support",       url=f"https://t.me/{SUPPORT_USERNAME}")],
     ])
 
 def back_keyboard():
@@ -160,8 +160,10 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f"👋 Welcome, <b>{user.first_name}</b>!\n\n"
         f"The #1 marketplace to buy Telegram accounts safely using USD.\n\n"
         f"━━━━━━━━━━━━━━━━━━━━━━\n💡 <b>How it works:</b>\n"
-        f"  • Recharge USD to your wallet\n  • Browse &amp; buy Telegram accounts\n"
-        f"  • Receive session instantly after purchase\n  • Refer friends &amp; earn 2% commission\n"
+        f"  {pe(PE_RECHARGE,'💵')} Recharge USD to your wallet\n"
+        f"  {pe(PE_BUY,'🛒')} Browse &amp; buy Telegram accounts\n"
+        f"  {pe(PE_WALLET,'📊')} Receive session instantly after purchase\n"
+        f"  {pe(PE_REFER,'👥')} Refer friends &amp; earn 2% commission\n"
         f"━━━━━━━━━━━━━━━━━━━━━━\n\nChoose an option below 👇",
         parse_mode="HTML", reply_markup=main_menu_keyboard())
 
@@ -169,7 +171,13 @@ async def menu_back(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     await query.edit_message_text(
-        f"🏪 <b>TG MARKET</b> — Main Menu\n\n💼 Balance: <b>${get_balance(query.from_user.id):.2f}</b>\n\nWhat would you like to do?",
+        f"🏪 <b>TG MARKET</b> — Main Menu\n\n"
+        f"{pe(PE_WALLET,'�')} Balance: <b>${get_balance(query.from_user.id):.2f}</b>\n\n"
+        f"What would you like to do?\n\n"
+        f"{pe(PE_BUY,'🛒')} Buy Account   {pe(PE_SELL,'💰')} Sell Account\n"
+        f"{pe(PE_RECHARGE,'💵')} Recharge   {pe(PE_WITHDRAW,'💸')} Withdraw\n"
+        f"{pe(PE_WALLET,'📊')} My Wallet   {pe(PE_REFER,'👥')} Refer &amp; Earn\n"
+        f"{pe(PE_SUPPORT,'🆘')} Support",
         parse_mode="HTML", reply_markup=main_menu_keyboard())
 
 async def cancel(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
