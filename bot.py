@@ -87,16 +87,30 @@ def get_referral_earnings(user_id: int) -> float:
         ).fetchone()
         return float(row["total"]) if row else 0.0
 
+# ── Premium emoji helpers ──────────────────────────────────────────────────────
+def pe(emoji_id: str, fallback: str) -> str:
+    """Wrap a premium emoji ID for use in HTML parse_mode messages."""
+    return f'<tg-emoji emoji-id="{emoji_id}">{fallback}</tg-emoji>'
+
+# Premium emoji IDs
+PE_BUY      = "6298691319086712919"
+PE_SELL     = "6298356878573307709"
+PE_RECHARGE = "6255738287462288807"
+PE_WITHDRAW = "6129731974291527294"
+PE_WALLET   = "6129801569941592173"
+PE_REFER    = "6129700535130922338"
+PE_SUPPORT  = "6296577138615125756"
+
 # ── Keyboards ─────────────────────────────────────────────────────────────────
 def main_menu_keyboard():
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🛒 Buy Account",  callback_data="menu_buy"),
-         InlineKeyboardButton("💰 Sell Account", callback_data="menu_sell")],
-        [InlineKeyboardButton("💵 Deposit",      callback_data="menu_deposit"),
-         InlineKeyboardButton("💸 Withdraw",     callback_data="menu_withdraw")],
-        [InlineKeyboardButton("📊 My Wallet",    callback_data="menu_balance"),
-         InlineKeyboardButton("👥 Refer & Earn", callback_data="menu_refer")],
-        [InlineKeyboardButton("🆘 Support",      url=f"https://t.me/{SUPPORT_USERNAME}")],
+        [InlineKeyboardButton(f"{pe(PE_BUY,'🛒')} Buy Account",   callback_data="menu_buy"),
+         InlineKeyboardButton(f"{pe(PE_SELL,'💰')} Sell Account",  callback_data="menu_sell")],
+        [InlineKeyboardButton(f"{pe(PE_RECHARGE,'💵')} Recharge",  callback_data="menu_deposit"),
+         InlineKeyboardButton(f"{pe(PE_WITHDRAW,'💸')} Withdraw",  callback_data="menu_withdraw")],
+        [InlineKeyboardButton(f"{pe(PE_WALLET,'📊')} My Wallet",   callback_data="menu_balance"),
+         InlineKeyboardButton(f"{pe(PE_REFER,'👥')} Refer & Earn", callback_data="menu_refer")],
+        [InlineKeyboardButton(f"{pe(PE_SUPPORT,'🆘')} Support",    url=f"https://t.me/{SUPPORT_USERNAME}")],
     ])
 
 def back_keyboard():
@@ -142,21 +156,21 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         except Exception:
             pass
     await update.message.reply_text(
-        f"╔══════════════════════╗\n      🏪 *TG MARKET*\n╚══════════════════════╝\n\n"
-        f"👋 Welcome, *{user.first_name}*!\n\n"
+        f"╔══════════════════════╗\n      🏪 <b>TG MARKET</b>\n╚══════════════════════╝\n\n"
+        f"👋 Welcome, <b>{user.first_name}</b>!\n\n"
         f"The #1 marketplace to buy Telegram accounts safely using USD.\n\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━\n💡 *How it works:*\n"
-        f"  • Deposit USD to your wallet\n  • Browse & buy Telegram accounts\n"
-        f"  • Receive session instantly after purchase\n  • Refer friends & earn 2% commission\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n💡 <b>How it works:</b>\n"
+        f"  • Recharge USD to your wallet\n  • Browse &amp; buy Telegram accounts\n"
+        f"  • Receive session instantly after purchase\n  • Refer friends &amp; earn 2% commission\n"
         f"━━━━━━━━━━━━━━━━━━━━━━\n\nChoose an option below 👇",
-        parse_mode="Markdown", reply_markup=main_menu_keyboard())
+        parse_mode="HTML", reply_markup=main_menu_keyboard())
 
 async def menu_back(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     await query.edit_message_text(
-        f"🏪 *TG MARKET* — Main Menu\n\n💼 Balance: *${get_balance(query.from_user.id):.2f}*\n\nWhat would you like to do?",
-        parse_mode="Markdown", reply_markup=main_menu_keyboard())
+        f"🏪 <b>TG MARKET</b> — Main Menu\n\n💼 Balance: <b>${get_balance(query.from_user.id):.2f}</b>\n\nWhat would you like to do?",
+        parse_mode="HTML", reply_markup=main_menu_keyboard())
 
 async def cancel(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("❌ Action cancelled.", reply_markup=main_menu_keyboard())
@@ -167,12 +181,12 @@ async def deposit_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     await query.edit_message_text(
-        "╔══════════════════════╗\n      💰 *DEPOSIT USD*\n╚══════════════════════╝\n\n"
-        "Send the amount you wish to deposit.\n\n📌 *Example:* `50`\n\n"
+        f"╔══════════════════════╗\n      {pe(PE_RECHARGE,'💵')} <b>RECHARGE</b>\n╚══════════════════════╝\n\n"
+        "Send the amount you wish to recharge.\n\n📌 <b>Example:</b> <code>50</code>\n\n"
         "━━━━━━━━━━━━━━━━━━━━━━\nAfter submitting, the admin will verify\n"
         "your payment and credit your balance.\n━━━━━━━━━━━━━━━━━━━━━━\n\n"
         "✏️ Enter amount or /cancel to go back:",
-        parse_mode="Markdown")
+        parse_mode="HTML")
     return DEPOSIT_AMOUNT
 
 async def deposit_amount(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
