@@ -88,7 +88,7 @@ def phone_to_country(phone: str) -> tuple:
     return "🌍", "Unknown"
 
 (DEPOSIT_AMOUNT, ADMIN_PHONE, ADMIN_OTP, ADMIN_ADD_PRICE,
- SELL_PHONE, SELL_OTP, SELL_PRICE) = range(7)
+ SELL_PHONE, SELL_OTP, SELL_PRICE, WITHDRAW_AMOUNT) = range(8)
 
 # ── Database ──────────────────────────────────────────────────────────────────
 def get_db():
@@ -122,6 +122,12 @@ def init_db():
             price        NUMERIC(12,2) NOT NULL,
             updated_at   TIMESTAMPTZ DEFAULT NOW())""")
         conn.execute("ALTER TABLE country_prices ADD COLUMN IF NOT EXISTS dial_code TEXT NOT NULL DEFAULT ''")
+        conn.execute("""CREATE TABLE IF NOT EXISTS withdrawals (
+            id BIGSERIAL PRIMARY KEY,
+            user_id BIGINT,
+            amount NUMERIC(12,2),
+            status TEXT DEFAULT 'pending',
+            created_at TIMESTAMPTZ DEFAULT NOW())""")
     logger.info("✅ Database initialised.")
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -1348,27 +1354,166 @@ async def refer_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         parse_mode="Markdown", reply_markup=back_keyboard())
 
 async def withdraw_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Entry point — ask user how much they want to withdraw."""
     query = update.callback_query
     await query.answer()
     user    = query.from_user
     balance = get_balance(user.id)
     await query.edit_message_text(
         f"╔══════════════════════╗\n      💸 *WITHDRAW*\n╚══════════════════════╝\n\n"
-        f"To withdraw, contact our support team.\n\n💰 Your Balance: *${balance:.2f}*\n\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━\n📩 Contact support with:\n  • Withdrawal amount\n  • Payment method & details\n━━━━━━━━━━━━━━━━━━━━━━",
+        f"💰 Your Balance: *${balance:.2f}*\n\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"Enter the amount you want to withdraw.\n\n"
+        f"📌 *Example:* `10`\n\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"✏️ Send amount or /cancel to go back:",
+        parse_mode="Markdown")
+    return WITHDRAW_AMOUNT
+
+async def withdraw_amount(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """User sent withdrawal amount — validate and submit."""
+    user = update.effective_user
+    ensure_user(user.id, user.username or "")
+    try:
+        amount = float(update.message.text.strip())
+        if amount <= 0:
+            raise ValueError
+    except ValueError:
+        await update.message.reply_text(
+            "❌ *Invalid amount.* Enter a positive number like `10`.",
+            parse_mode="Markdown")
+        return WITHDRAW_AMOUNT
+
+    balance = get_balance(user.id)
+    if balance < amount:
+        await update.message.reply_text(
+            f"❌ *Insufficient Balance*\n\n"
+            f"💰 Your balance: *${balance:.2f}*\n"
+            f"💸 Requested:    *${amount:.2f}*\n\n"
+            f"You can only withdraw up to *${balance:.2f}*.",
+            parse_mode="Markdown",
+            reply_markup=main_menu_keyboard())
+        return ConversationHandler.END
+
+    # Deduct balance and record withdrawal
+    with get_db() as conn:
+        wd_id = conn.execute(
+            "INSERT INTO withdrawals (user_id, amount) VALUES (%s,%s) RETURNING id",
+            (user.id, amount)
+        ).fetchone()["id"]
+        conn.execute(
+            "UPDATE users SET balance=balance-%s WHERE user_id=%s",
+            (amount, user.id)
+        )
+
+    new_balance = get_balance(user.id)
+
+    await update.message.reply_text(
+        f"✅ *Withdrawal Request Submitted!*\n\n"
+        f"💸 Amount: *${amount:.2f}*\n"
+        f"🆔 Reference ID: `{wd_id}`\n"
+        f"💰 Remaining Balance: *${new_balance:.2f}*\n\n"
+        f"⏳ Admin will review and process your withdrawal shortly.",
         parse_mode="Markdown",
-        reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("🆘 Contact Support", url=f"https://t.me/{SUPPORT_USERNAME}")],
-            [InlineKeyboardButton("🔙 Back to Menu",    callback_data="menu_back")]]))
-    # Post withdrawal request to funds channel
-    await send_to_channel(query.bot, FUNDS_CHANNEL,
+        reply_markup=main_menu_keyboard())
+
+    # Notify admin
+    await ctx.bot.send_message(
+        ADMIN_ID,
+        f"💸 *NEW WITHDRAWAL REQUEST*\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"👤 User: @{user.username or user.first_name} (`{user.id}`)\n"
+        f"💵 Amount: *${amount:.2f}*\n"
+        f"🆔 Withdrawal ID: `{wd_id}`\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"✅ /wd_approve_{wd_id}\n"
+        f"❌ /wd_reject_{wd_id}",
+        parse_mode="Markdown")
+
+    # Post to funds channel
+    await send_to_channel(ctx.bot, FUNDS_CHANNEL,
         f"💸 <b>WITHDRAWAL REQUEST</b>\n"
         f"━━━━━━━━━━━━━━━━━━━━━━\n"
         f"👤 User: @{user.username or user.first_name} (<code>{user.id}</code>)\n"
-        f"💰 Balance: <b>${balance:.2f}</b>\n"
-        f"📊 Status: <b>Pending — awaiting support contact</b>\n"
+        f"💵 Amount: <b>${amount:.2f}</b>\n"
+        f"🆔 Withdrawal ID: <code>{wd_id}</code>\n"
+        f"📊 Status: <b>⏳ Pending</b>\n"
         f"━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"User has been directed to contact support."
+        f"✅ /wd_approve_{wd_id}   ❌ /wd_reject_{wd_id}"
+    )
+    return ConversationHandler.END
+
+async def wd_approve(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Admin approves a withdrawal: /wd_approve_<id>"""
+    if update.effective_user.id != ADMIN_ID:
+        return
+    try:
+        wd_id = int(update.message.text.split("_")[2])
+    except (IndexError, ValueError):
+        await update.message.reply_text("Usage: /wd_approve_<id>"); return
+    with get_db() as conn:
+        wd = conn.execute("SELECT * FROM withdrawals WHERE id=%s", (wd_id,)).fetchone()
+        if not wd:
+            await update.message.reply_text("❌ Not found."); return
+        if wd["status"] != "pending":
+            await update.message.reply_text("⚠️ Already processed."); return
+        conn.execute("UPDATE withdrawals SET status='approved' WHERE id=%s", (wd_id,))
+    await update.message.reply_text(
+        f"✅ Withdrawal #{wd_id} approved! *${wd['amount']:.2f}* paid to user `{wd['user_id']}`.",
+        parse_mode="Markdown")
+    await ctx.bot.send_message(
+        wd["user_id"],
+        f"🎉 *Withdrawal Approved!*\n\n"
+        f"💸 *${wd['amount']:.2f}* has been processed.\n"
+        f"🆔 Ref: `{wd_id}`\n\n"
+        f"Thank you for using TG Market! 🛒",
+        parse_mode="Markdown",
+        reply_markup=main_menu_keyboard())
+    await send_to_channel(ctx.bot, FUNDS_CHANNEL,
+        f"✅ <b>WITHDRAWAL APPROVED</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"🆔 Withdrawal ID: <code>{wd_id}</code>\n"
+        f"👤 User: <code>{wd['user_id']}</code>\n"
+        f"💵 Amount: <b>${wd['amount']:.2f}</b>\n"
+        f"📊 Status: <b>✅ Approved & Paid</b>"
+    )
+
+async def wd_reject(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Admin rejects a withdrawal: /wd_reject_<id>"""
+    if update.effective_user.id != ADMIN_ID:
+        return
+    try:
+        wd_id = int(update.message.text.split("_")[2])
+    except (IndexError, ValueError):
+        await update.message.reply_text("Usage: /wd_reject_<id>"); return
+    with get_db() as conn:
+        wd = conn.execute("SELECT * FROM withdrawals WHERE id=%s", (wd_id,)).fetchone()
+        if not wd or wd["status"] != "pending":
+            await update.message.reply_text("❌ Not found or already processed."); return
+        conn.execute("UPDATE withdrawals SET status='rejected' WHERE id=%s", (wd_id,))
+        # Refund the balance
+        conn.execute(
+            "UPDATE users SET balance=balance+%s WHERE user_id=%s",
+            (wd["amount"], wd["user_id"])
+        )
+    await update.message.reply_text(
+        f"❌ Withdrawal #{wd_id} rejected. *${wd['amount']:.2f}* refunded to user.",
+        parse_mode="Markdown")
+    await ctx.bot.send_message(
+        wd["user_id"],
+        f"❌ *Withdrawal Rejected*\n\n"
+        f"Your withdrawal of *${wd['amount']:.2f}* (ID: `{wd_id}`) was not approved.\n"
+        f"💰 *${wd['amount']:.2f}* has been refunded to your balance.\n\n"
+        f"Contact 🆘 Support if this is an error.",
+        parse_mode="Markdown",
+        reply_markup=main_menu_keyboard())
+    await send_to_channel(ctx.bot, FUNDS_CHANNEL,
+        f"❌ <b>WITHDRAWAL REJECTED</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"🆔 Withdrawal ID: <code>{wd_id}</code>\n"
+        f"👤 User: <code>{wd['user_id']}</code>\n"
+        f"💵 Amount: <b>${wd['amount']:.2f}</b>\n"
+        f"📊 Status: <b>❌ Rejected — Refunded</b>"
     )
 
 # ── Flask + Main ──────────────────────────────────────────────────────────────
@@ -1377,6 +1522,10 @@ def build_app() -> Application:
     deposit_conv = ConversationHandler(
         entry_points=[CallbackQueryHandler(deposit_start, pattern="^menu_deposit$")],
         states={DEPOSIT_AMOUNT: [MessageHandler(filters.TEXT & ~filters.COMMAND, deposit_amount)]},
+        fallbacks=[CommandHandler("cancel", cancel)], per_message=False)
+    withdraw_conv = ConversationHandler(
+        entry_points=[CallbackQueryHandler(withdraw_menu, pattern="^menu_withdraw$")],
+        states={WITHDRAW_AMOUNT: [MessageHandler(filters.TEXT & ~filters.COMMAND, withdraw_amount)]},
         fallbacks=[CommandHandler("cancel", cancel)], per_message=False)
     login_conv = ConversationHandler(
         entry_points=[CommandHandler("login_account", admin_login)],
@@ -1418,6 +1567,7 @@ def build_app() -> Application:
     )
     app.add_handler(CommandHandler("start",    start))
     app.add_handler(deposit_conv)
+    app.add_handler(withdraw_conv)
     app.add_handler(login_conv)
     app.add_handler(sell_conv)
     app.add_handler(apanel_conv)
@@ -1429,6 +1579,8 @@ def build_app() -> Application:
     app.add_handler(CommandHandler("deduct",      admin_deduct))
     app.add_handler(CommandHandler("add_sell",    admin_add_sell))
     app.add_handler(CommandHandler("prices",      cmd_prices))
+    app.add_handler(MessageHandler(filters.Regex(r"^/wd_approve_\d+$") & filters.User(ADMIN_ID), wd_approve))
+    app.add_handler(MessageHandler(filters.Regex(r"^/wd_reject_\d+$")  & filters.User(ADMIN_ID), wd_reject))
     # Admin panel inline button handlers (outside conversation for view/del/back/close)
     app.add_handler(CallbackQueryHandler(ap_view,       pattern=r"^ap_view_"))
     app.add_handler(CallbackQueryHandler(ap_edit,       pattern=r"^ap_edit_"))
@@ -1444,7 +1596,6 @@ def build_app() -> Application:
     app.add_handler(CallbackQueryHandler(confirm_buy,   pattern=r"^confirm_\d+$"))
     app.add_handler(CallbackQueryHandler(show_balance,  pattern="^menu_balance$"))
     app.add_handler(CallbackQueryHandler(refer_menu,    pattern="^menu_refer$"))
-    app.add_handler(CallbackQueryHandler(withdraw_menu, pattern="^menu_withdraw$"))
     app.add_handler(CallbackQueryHandler(menu_back,     pattern="^menu_back$"))
     return app
 
