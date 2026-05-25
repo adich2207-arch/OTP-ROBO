@@ -62,8 +62,10 @@ def init_db():
         conn.execute("""CREATE TABLE IF NOT EXISTS country_prices (
             country_code TEXT PRIMARY KEY,
             country_name TEXT NOT NULL,
+            dial_code    TEXT NOT NULL DEFAULT '',
             price        NUMERIC(12,2) NOT NULL,
             updated_at   TIMESTAMPTZ DEFAULT NOW())""")
+        conn.execute("ALTER TABLE country_prices ADD COLUMN IF NOT EXISTS dial_code TEXT NOT NULL DEFAULT ''")
     logger.info("✅ Database initialised.")
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -732,92 +734,287 @@ async def confirm_buy(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 
 # ── PRICES ────────────────────────────────────────────────────────────────────
+# Country flag emoji helper (converts country code to flag emoji)
+def country_flag(code: str) -> str:
+    try:
+        return "".join(chr(0x1F1E6 + ord(c) - ord("A")) for c in code.upper()[:2])
+    except Exception:
+        return "🌍"
+
 async def cmd_prices(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Public command — anyone can check payout prices."""
+    """Public /prices command — shows the buy price list."""
     with get_db() as conn:
         rows = conn.execute(
-            "SELECT country_code, country_name, price FROM country_prices ORDER BY country_name ASC"
+            "SELECT country_code, country_name, dial_code, price "
+            "FROM country_prices ORDER BY country_name ASC"
         ).fetchall()
     if not rows:
         await update.message.reply_text(
-            "No prices set yet. Contact support for details.",
+            "No prices available yet. Check back soon!",
             reply_markup=main_menu_keyboard())
         return
-    lines = ["<b>Account Payout Prices</b>", "=" * 30]
+    lines = ["<b>We buy from you:</b>\n"]
     for r in rows:
+        flag = country_flag(r["country_code"])
         lines.append(
-            f"<b>{r['country_name']}</b> (<code>{r['country_code']}</code>)"
-            f"  —  <b>${r['price']:.2f}</b>"
+            f"[{flag}]+{r['dial_code']}-{r['country_code']}: {r['price']}$"
         )
-    lines.append("\nWant to sell? Tap Sell Account in the menu.")
     await update.message.reply_text(
-        "\n".join(lines), parse_mode="HTML", reply_markup=main_menu_keyboard())
+        "\n".join(lines),
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("💰 Sell Account", callback_data="menu_sell")]
+        ])
+    )
 
 
-async def admin_set_price_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Set or update a country price.
-    Usage: /setprice US 5.00 United States
-    """
+# ── ADMIN PRICE PANEL ─────────────────────────────────────────────────────────
+(APANEL_ADD_WAITING, APANEL_EDIT_WAITING, APANEL_DEL_CONFIRM) = range(10, 13)
+
+def _prices_panel_keyboard(rows):
+    """Build the admin price panel keyboard."""
+    buttons = []
+    for r in rows:
+        flag = country_flag(r["country_code"])
+        buttons.append([
+            InlineKeyboardButton(
+                f"{flag} {r['country_code']} +{r['dial_code']} — {r['price']}$",
+                callback_data=f"ap_view_{r['country_code']}"
+            )
+        ])
+    buttons.append([InlineKeyboardButton("➕ Add Country", callback_data="ap_add")])
+    buttons.append([InlineKeyboardButton("🔙 Close Panel", callback_data="ap_close")])
+    return InlineKeyboardMarkup(buttons)
+
+async def admin_prices_panel(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Admin command /adminprices — opens the interactive price management panel."""
+    if update.effective_user.id != ADMIN_ID:
+        await update.message.reply_text("❌ Not authorised.")
+        return
+    with get_db() as conn:
+        rows = conn.execute(
+            "SELECT country_code, country_name, dial_code, price "
+            "FROM country_prices ORDER BY country_name ASC"
+        ).fetchall()
+    text = (
+        "<b>Admin Price Panel</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"Total countries: <b>{len(rows)}</b>\n\n"
+        "Tap a country to edit or delete it.\n"
+        "Tap ➕ Add Country to add a new one."
+    )
+    await update.message.reply_text(
+        text, parse_mode="HTML",
+        reply_markup=_prices_panel_keyboard(rows)
+    )
+
+async def ap_refresh(query, ctx):
+    """Refresh the admin panel in-place."""
+    with get_db() as conn:
+        rows = conn.execute(
+            "SELECT country_code, country_name, dial_code, price "
+            "FROM country_prices ORDER BY country_name ASC"
+        ).fetchall()
+    text = (
+        "<b>Admin Price Panel</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"Total countries: <b>{len(rows)}</b>\n\n"
+        "Tap a country to edit or delete it.\n"
+        "Tap ➕ Add Country to add a new one."
+    )
+    await query.edit_message_text(
+        text, parse_mode="HTML",
+        reply_markup=_prices_panel_keyboard(rows)
+    )
+
+async def ap_view(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Show edit/delete options for a specific country."""
+    query = update.callback_query
+    await query.answer()
+    code = query.data.split("ap_view_")[1]
+    with get_db() as conn:
+        row = conn.execute(
+            "SELECT * FROM country_prices WHERE country_code=%s", (code,)
+        ).fetchone()
+    if not row:
+        await query.answer("Not found.", show_alert=True)
+        return
+    flag = country_flag(code)
+    await query.edit_message_text(
+        f"<b>{flag} {row['country_name']}</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"Code:      <code>{row['country_code']}</code>\n"
+        f"Dial code: <code>+{row['dial_code']}</code>\n"
+        f"Price:     <b>{row['price']}$</b>\n\n"
+        f"What would you like to do?",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("✏️ Edit Price", callback_data=f"ap_edit_{code}")],
+            [InlineKeyboardButton("🗑 Delete",     callback_data=f"ap_del_{code}")],
+            [InlineKeyboardButton("🔙 Back",       callback_data="ap_back")],
+        ])
+    )
+
+async def ap_edit(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Ask admin for new price."""
+    query = update.callback_query
+    await query.answer()
+    code = query.data.split("ap_edit_")[1]
+    ctx.user_data["ap_edit_code"] = code
+    await query.edit_message_text(
+        f"✏️ Enter the new price for <code>{code}</code> (e.g. <code>1.50</code>):\n\n"
+        f"Send /apcancel to go back.",
+        parse_mode="HTML"
+    )
+    return APANEL_EDIT_WAITING
+
+async def ap_edit_save(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Save the new price."""
+    if update.effective_user.id != ADMIN_ID:
+        return
+    code = ctx.user_data.get("ap_edit_code")
+    try:
+        price = float(update.message.text.strip().replace("$", ""))
+        if price <= 0:
+            raise ValueError
+    except ValueError:
+        await update.message.reply_text("❌ Invalid price. Enter a number like <code>1.50</code>", parse_mode="HTML")
+        return APANEL_EDIT_WAITING
+    with get_db() as conn:
+        conn.execute(
+            "UPDATE country_prices SET price=%s, updated_at=NOW() WHERE country_code=%s",
+            (price, code)
+        )
+    await update.message.reply_text(
+        f"✅ <code>{code}</code> price updated to <b>{price}$</b>",
+        parse_mode="HTML"
+    )
+    # Re-show the panel
+    with get_db() as conn:
+        rows = conn.execute(
+            "SELECT country_code, country_name, dial_code, price "
+            "FROM country_prices ORDER BY country_name ASC"
+        ).fetchall()
+    await update.message.reply_text(
+        "<b>Admin Price Panel</b>\n━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"Total countries: <b>{len(rows)}</b>\n\nTap a country to edit or delete.",
+        parse_mode="HTML",
+        reply_markup=_prices_panel_keyboard(rows)
+    )
+    return ConversationHandler.END
+
+async def ap_del(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Confirm deletion."""
+    query = update.callback_query
+    await query.answer()
+    code = query.data.split("ap_del_")[1]
+    await query.edit_message_text(
+        f"🗑 Are you sure you want to delete <code>{code}</code>?",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("✅ Yes, Delete", callback_data=f"ap_delconfirm_{code}")],
+            [InlineKeyboardButton("❌ Cancel",      callback_data=f"ap_view_{code}")],
+        ])
+    )
+
+async def ap_del_confirm(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Execute deletion."""
+    query = update.callback_query
+    await query.answer()
+    code = query.data.split("ap_delconfirm_")[1]
+    with get_db() as conn:
+        conn.execute("DELETE FROM country_prices WHERE country_code=%s", (code,))
+    await query.answer(f"✅ {code} deleted.", show_alert=True)
+    await ap_refresh(query, ctx)
+
+async def ap_add(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Ask admin for new country details."""
+    query = update.callback_query
+    await query.answer()
+    await query.edit_message_text(
+        "➕ <b>Add New Country</b>\n\n"
+        "Send the details in this format:\n"
+        "<code>CODE DIALCODE PRICE Country Name</code>\n\n"
+        "Example:\n"
+        "<code>IN 91 2.00 India</code>\n"
+        "<code>US 1 8.00 United States</code>\n\n"
+        "Send /apcancel to go back.",
+        parse_mode="HTML"
+    )
+    return APANEL_ADD_WAITING
+
+async def ap_add_save(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Save the new country."""
     if update.effective_user.id != ADMIN_ID:
         return
     try:
         parts = update.message.text.strip().split(None, 3)
-        code  = parts[1].upper()
-        price = float(parts[2])
-        name  = parts[3]
-        if price <= 0:
+        code     = parts[0].upper()
+        dial     = parts[1].lstrip("+")
+        price    = float(parts[2])
+        name     = parts[3]
+        if price <= 0 or not dial.isdigit():
             raise ValueError
     except (IndexError, ValueError):
         await update.message.reply_text(
-            "Usage: /setprice &lt;code&gt; &lt;price&gt; &lt;Country Name&gt;\n"
-            "Example: /setprice US 5.00 United States",
-            parse_mode="HTML")
-        return
+            "❌ Wrong format. Use:\n<code>CODE DIALCODE PRICE Country Name</code>\n"
+            "Example: <code>IN 91 2.00 India</code>",
+            parse_mode="HTML"
+        )
+        return APANEL_ADD_WAITING
     with get_db() as conn:
         conn.execute(
-            "INSERT INTO country_prices (country_code, country_name, price) VALUES (%s,%s,%s)"
-            " ON CONFLICT (country_code) DO UPDATE SET country_name=%s, price=%s, updated_at=NOW()",
-            (code, name, price, name, price)
+            "INSERT INTO country_prices (country_code, country_name, dial_code, price) "
+            "VALUES (%s,%s,%s,%s) ON CONFLICT (country_code) DO UPDATE "
+            "SET country_name=%s, dial_code=%s, price=%s, updated_at=NOW()",
+            (code, name, dial, price, name, dial, price)
         )
     await update.message.reply_text(
-        f"<b>{name}</b> (<code>{code}</code>) set to <b>${price:.2f}</b>",
-        parse_mode="HTML")
-
-
-async def admin_del_price_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Remove a country price. Usage: /delprice US"""
-    if update.effective_user.id != ADMIN_ID:
-        return
-    try:
-        code = update.message.text.strip().split()[1].upper()
-    except IndexError:
-        await update.message.reply_text("Usage: /delprice &lt;code&gt;  e.g. /delprice US", parse_mode="HTML")
-        return
-    with get_db() as conn:
-        conn.execute("DELETE FROM country_prices WHERE country_code=%s", (code,))
-    await update.message.reply_text(f"Price for <code>{code}</code> removed.", parse_mode="HTML")
-
-
-async def admin_list_prices_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Admin: list all prices with edit commands."""
-    if update.effective_user.id != ADMIN_ID:
-        return
+        f"✅ <b>{name}</b> (<code>{code}</code>) added at <b>{price}$</b>",
+        parse_mode="HTML"
+    )
     with get_db() as conn:
         rows = conn.execute(
-            "SELECT country_code, country_name, price FROM country_prices ORDER BY country_name ASC"
+            "SELECT country_code, country_name, dial_code, price "
+            "FROM country_prices ORDER BY country_name ASC"
         ).fetchall()
-    if not rows:
-        await update.message.reply_text("No prices set yet. Use /setprice to add one.")
-        return
-    lines = [f"<b>All Country Prices ({len(rows)})</b>", "=" * 30]
-    for r in rows:
-        lines.append(
-            f"<b>{r['country_name']}</b> <code>{r['country_code']}</code>"
-            f" — <b>${r['price']:.2f}</b>\n"
-            f"  Edit: <code>/setprice {r['country_code']} {r['price']:.2f} {r['country_name']}</code>\n"
-            f"  Remove: <code>/delprice {r['country_code']}</code>"
-        )
-    await update.message.reply_text("\n".join(lines), parse_mode="HTML")
+    await update.message.reply_text(
+        "<b>Admin Price Panel</b>\n━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"Total countries: <b>{len(rows)}</b>\n\nTap a country to edit or delete.",
+        parse_mode="HTML",
+        reply_markup=_prices_panel_keyboard(rows)
+    )
+    return ConversationHandler.END
+
+async def ap_back(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Go back to the main panel list."""
+    query = update.callback_query
+    await query.answer()
+    await ap_refresh(query, ctx)
+
+async def ap_close(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Close the panel."""
+    query = update.callback_query
+    await query.answer()
+    await query.edit_message_text("✅ Price panel closed.")
+    return ConversationHandler.END
+
+async def ap_cancel(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Cancel add/edit conversation."""
+    if update.effective_user.id != ADMIN_ID:
+        return ConversationHandler.END
+    with get_db() as conn:
+        rows = conn.execute(
+            "SELECT country_code, country_name, dial_code, price "
+            "FROM country_prices ORDER BY country_name ASC"
+        ).fetchall()
+    await update.message.reply_text(
+        "<b>Admin Price Panel</b>\n━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"Total countries: <b>{len(rows)}</b>\n\nTap a country to edit or delete.",
+        parse_mode="HTML",
+        reply_markup=_prices_panel_keyboard(rows)
+    )
+    return ConversationHandler.END
 
 
 # ── SELL FLOW ─────────────────────────────────────────────────────────────────
@@ -1064,21 +1261,40 @@ def build_app() -> Application:
                                  pattern="^menu_back$"),
         ],
         per_message=False)
+    # Admin price panel conversation
+    apanel_conv = ConversationHandler(
+        entry_points=[
+            CommandHandler("adminprices", admin_prices_panel),
+            CallbackQueryHandler(ap_add,  pattern="^ap_add$"),
+        ],
+        states={
+            APANEL_ADD_WAITING:  [MessageHandler(filters.TEXT & ~filters.COMMAND & filters.User(ADMIN_ID), ap_add_save)],
+            APANEL_EDIT_WAITING: [MessageHandler(filters.TEXT & ~filters.COMMAND & filters.User(ADMIN_ID), ap_edit_save)],
+        },
+        fallbacks=[CommandHandler("apcancel", ap_cancel)],
+        per_message=False,
+        allow_reentry=True,
+    )
     app.add_handler(CommandHandler("start",    start))
     app.add_handler(deposit_conv)
     app.add_handler(login_conv)
     app.add_handler(sell_conv)
+    app.add_handler(apanel_conv)
     app.add_error_handler(error_handler)
-    app.add_handler(CommandHandler("accounts", admin_accounts))
-    app.add_handler(CommandHandler("users",    admin_users))
-    app.add_handler(CommandHandler("pending",  admin_pending))
-    app.add_handler(CommandHandler("credit",   admin_credit))
-    app.add_handler(CommandHandler("deduct",   admin_deduct))
+    app.add_handler(CommandHandler("accounts",    admin_accounts))
+    app.add_handler(CommandHandler("users",       admin_users))
+    app.add_handler(CommandHandler("pending",     admin_pending))
+    app.add_handler(CommandHandler("credit",      admin_credit))
+    app.add_handler(CommandHandler("deduct",      admin_deduct))
     app.add_handler(CommandHandler("add_sell",    admin_add_sell))
     app.add_handler(CommandHandler("prices",      cmd_prices))
-    app.add_handler(CommandHandler("setprice",    admin_set_price_cmd))
-    app.add_handler(CommandHandler("delprice",    admin_del_price_cmd))
-    app.add_handler(CommandHandler("listprices",  admin_list_prices_cmd))
+    # Admin panel inline button handlers (outside conversation for view/del/back/close)
+    app.add_handler(CallbackQueryHandler(ap_view,       pattern=r"^ap_view_"))
+    app.add_handler(CallbackQueryHandler(ap_edit,       pattern=r"^ap_edit_"))
+    app.add_handler(CallbackQueryHandler(ap_del,        pattern=r"^ap_del_[A-Z]"))
+    app.add_handler(CallbackQueryHandler(ap_del_confirm,pattern=r"^ap_delconfirm_"))
+    app.add_handler(CallbackQueryHandler(ap_back,       pattern="^ap_back$"))
+    app.add_handler(CallbackQueryHandler(ap_close,      pattern="^ap_close$"))
     app.add_handler(MessageHandler(filters.Regex(r"^/approve_\d+$") & filters.User(ADMIN_ID), admin_approve))
     app.add_handler(MessageHandler(filters.Regex(r"^/reject_\d+$")  & filters.User(ADMIN_ID), admin_reject))
     app.add_handler(MessageHandler(filters.Regex(r"^/del_\d+$")     & filters.User(ADMIN_ID), admin_delete))
