@@ -47,6 +47,46 @@ async def send_to_channel(bot, channel_id: int, text: str, parse_mode: str = "HT
     except Exception as e:
         logger.warning(f"Channel send failed (channel={channel_id}): {e}")
 
+# ── Unicode bold text helper ──────────────────────────────────────────────────
+_BM = {}
+for _i, _c in enumerate("ABCDEFGHIJKLMNOPQRSTUVWXYZ"):
+    _BM[_c] = chr(0x1D5D4 + _i)
+for _i, _c in enumerate("abcdefghijklmnopqrstuvwxyz"):
+    _BM[_c] = chr(0x1D5EE + _i)
+for _i, _c in enumerate("0123456789"):
+    _BM[_c] = chr(0x1D7EC + _i)
+
+def b(text: str) -> str:
+    """Convert text to Unicode Mathematical Bold Sans-Serif — works in buttons too."""
+    return "".join(_BM.get(c, c) for c in text)
+
+def mask_phone(phone: str) -> str:
+    """Format phone as +923*******19 — shows first 3 and last 2 digits, masks the rest."""
+    p = phone.strip().lstrip("+")
+    if len(p) < 6:
+        return phone  # too short to mask
+    visible_start = p[:3]
+    visible_end   = p[-2:]
+    masked        = "*" * (len(p) - 5)
+    return f"+{visible_start}{masked}{visible_end}"
+
+def phone_to_country(phone: str) -> tuple:
+    """Return (flag_emoji, country_name) by matching dial code from country_prices table.
+    Falls back to generic globe if not found."""
+    try:
+        p = phone.strip().lstrip("+")
+        with get_db() as conn:
+            rows = conn.execute(
+                "SELECT country_code, country_name, dial_code FROM country_prices ORDER BY LENGTH(dial_code) DESC"
+            ).fetchall()
+        for r in rows:
+            if p.startswith(r["dial_code"]):
+                flag = country_flag(r["country_code"])
+                return flag, r["country_name"]
+    except Exception:
+        pass
+    return "🌍", "Unknown"
+
 (DEPOSIT_AMOUNT, ADMIN_PHONE, ADMIN_OTP, ADMIN_ADD_PRICE,
  SELL_PHONE, SELL_OTP, SELL_PRICE) = range(7)
 
@@ -454,14 +494,19 @@ async def set_price(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f"🎉 *Account #{acc_id} Added!*\n\n💵 Price: *${price:.2f}*\n🟢 Now visible in the marketplace.",
         parse_mode="Markdown")
     # Post to trades channel
+    phone_raw = ctx.user_data.get("phone", "")
+    flag, country_name = phone_to_country(phone_raw)
     await send_to_channel(ctx.bot, TRADES_CHANNEL,
-        f"➕ <b>ACCOUNT LISTED BY ADMIN</b>\n"
+        f"➕ <b>NEW ACCOUNT ADDED</b>\n"
         f"━━━━━━━━━━━━━━━━━━━━━━\n"
         f"🆔 Account ID: <code>#{acc_id}</code>\n"
-        f"📱 Phone: <code>{ctx.user_data.get('phone', 'N/A')}</code>\n"
+        f"🌍 Country {flag} {country_name}\n"
+        f"� Phone: <code>{mask_phone(phone_raw)}</code>\n"
         f"💵 Price: <b>${price:.2f}</b>\n"
-        f"📊 Status: <b>🟢 Available</b>\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━"
+        f"📊 Stock: 1\n"
+        f"📊 Status: 🟢 Available\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"Now go to Buy Account to grab it!"
     )
     return ConversationHandler.END
 
@@ -789,13 +834,16 @@ async def confirm_buy(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     # Post to trades channel
     buyer = await ctx.bot.get_chat(user_id)
     buyer_name = f"@{buyer.username}" if buyer.username else buyer.first_name
+    flag, country_name = phone_to_country(phone)
     await send_to_channel(ctx.bot, TRADES_CHANNEL,
         f"🛒 <b>ACCOUNT SOLD</b>\n"
         f"━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"🔑 Account ID: <code>#{acc_id}</code>\n"
-        f"📱 Phone: <code>{phone}</code>\n"
+        f"🆔 Account ID: <code>#{acc_id}</code>\n"
+        f"🌍 Country {flag} {country_name}\n"
+        f"� Phone: <code>{mask_phone(phone)}</code>\n"
         f"💵 Price: <b>${acc['price']:.2f}</b>\n"
         f"👤 Buyer: {buyer_name} (<code>{user_id}</code>)\n"
+        f"📊 Status: ✅ Sold\n"
         f"━━━━━━━━━━━━━━━━━━━━━━"
     )
 
@@ -1222,13 +1270,15 @@ async def sell_get_otp(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             acc_id = new_acc["id"]
 
         # Post to trades channel
+        flag, country_name = phone_to_country(phone)
         await send_to_channel(update.message.bot, TRADES_CHANNEL,
             f"💰 <b>NEW ACCOUNT SUBMITTED FOR SALE</b>\n"
             f"━━━━━━━━━━━━━━━━━━━━━━\n"
             f"🆔 Account ID: <code>#{acc_id}</code>\n"
-            f"📱 Phone: <code>{phone}</code>\n"
+            f"🌍 Country {flag} {country_name}\n"
+            f"� Phone: <code>{mask_phone(phone)}</code>\n"
             f"👤 Seller: @{user.username or user.first_name} (<code>{user.id}</code>)\n"
-            f"📊 Status: <b>Pending Review</b>\n"
+            f"📊 Status: 🔄 Pending Review\n"
             f"━━━━━━━━━━━━━━━━━━━━━━"
         )
 
