@@ -47,6 +47,19 @@ async def send_to_channel(bot, channel_id: int, text: str, parse_mode: str = "HT
     except Exception as e:
         logger.warning(f"Channel send failed (channel={channel_id}): {e}")
 
+# ── Unicode bold text helper ──────────────────────────────────────────────────
+_BM = {}
+for _i, _c in enumerate("ABCDEFGHIJKLMNOPQRSTUVWXYZ"):
+    _BM[_c] = chr(0x1D5D4 + _i)
+for _i, _c in enumerate("abcdefghijklmnopqrstuvwxyz"):
+    _BM[_c] = chr(0x1D5EE + _i)
+for _i, _c in enumerate("0123456789"):
+    _BM[_c] = chr(0x1D7EC + _i)
+
+def b(text: str) -> str:
+    """Convert text to Unicode Mathematical Bold Sans-Serif — works in buttons too."""
+    return "".join(_BM.get(c, c) for c in text)
+
 (DEPOSIT_AMOUNT, ADMIN_PHONE, ADMIN_OTP, ADMIN_ADD_PRICE,
  SELL_PHONE, SELL_OTP, SELL_PRICE) = range(7)
 
@@ -128,17 +141,17 @@ PE_SUPPORT  = "6296577138615125756"
 # ── Keyboards ─────────────────────────────────────────────────────────────────
 def main_menu_keyboard():
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🛒 Buy Account",   callback_data="menu_buy"),
-         InlineKeyboardButton("💰 Sell Account",  callback_data="menu_sell")],
-        [InlineKeyboardButton("💵 Recharge",      callback_data="menu_deposit"),
-         InlineKeyboardButton("💸 Withdraw",      callback_data="menu_withdraw")],
-        [InlineKeyboardButton("📊 My Wallet",     callback_data="menu_balance"),
-         InlineKeyboardButton("👥 Refer & Earn",  callback_data="menu_refer")],
-        [InlineKeyboardButton("🆘 Support",       url=f"https://t.me/{SUPPORT_USERNAME}")],
+        [InlineKeyboardButton(f"🛒 {b('Buy Account')}",   callback_data="menu_buy"),
+         InlineKeyboardButton(f"💰 {b('Sell Account')}",  callback_data="menu_sell")],
+        [InlineKeyboardButton(f"💵 {b('Recharge')}",      callback_data="menu_deposit"),
+         InlineKeyboardButton(f"💸 {b('Withdraw')}",      callback_data="menu_withdraw")],
+        [InlineKeyboardButton(f"📊 {b('My Wallet')}",     callback_data="menu_balance"),
+         InlineKeyboardButton(f"👥 {b('Refer & Earn')}",  callback_data="menu_refer")],
+        [InlineKeyboardButton(f"🆘 {b('Support')}",       url=f"https://t.me/{SUPPORT_USERNAME}")],
     ])
 
 def back_keyboard():
-    return InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back to Menu", callback_data="menu_back")]])
+    return InlineKeyboardMarkup([[InlineKeyboardButton(f"🔙 {b('Back to Menu')}", callback_data="menu_back")]])
 
 
 # ── PTB error handler (logs ALL handler exceptions to console) ────────────────
@@ -636,7 +649,7 @@ async def _watch_for_otp(bot, user_id: int, session_str: str, phone: str, acc_id
                 f"Please check your SMS or contact support.",
                 parse_mode="Markdown",
                 reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("🆘 Support", url=f"https://t.me/{SUPPORT_USERNAME}")]
+                    [InlineKeyboardButton(f"🆘 {b('Support')}", url=f"https://t.me/{SUPPORT_USERNAME}")]
                 ])
             )
 
@@ -649,7 +662,7 @@ async def _watch_for_otp(bot, user_id: int, session_str: str, phone: str, acc_id
             f"Please request the OTP manually and contact support if needed.",
             parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("🆘 Support", url=f"https://t.me/{SUPPORT_USERNAME}")]
+                [InlineKeyboardButton(f"🆘 {b('Support')}", url=f"https://t.me/{SUPPORT_USERNAME}")]
             ])
         )
 
@@ -666,7 +679,7 @@ async def buy_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             "😔 No accounts available right now.\nCheck back soon!",
             parse_mode="Markdown", reply_markup=back_keyboard()); return
     buttons = [[InlineKeyboardButton(f"🔑 Account #{a['id']}  —  ${a['price']:.2f}", callback_data=f"view_{a['id']}")] for a in accounts]
-    buttons.append([InlineKeyboardButton("🔙 Back to Menu", callback_data="menu_back")])
+    buttons.append([InlineKeyboardButton(f"🔙 {b('Back to Menu')}", callback_data="menu_back")])
     await query.edit_message_text(
         f"╔══════════════════════╗\n     🛒 *MARKETPLACE*\n╚══════════════════════╝\n\n"
         f"📦 *{len(accounts)} account(s) available*\n\nTap any listing to view details:",
@@ -682,7 +695,7 @@ async def view_account(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         acc = conn.execute("SELECT id, price FROM accounts WHERE id=%s AND status='available'", (acc_id,)).fetchone()
     if not acc:
         await query.edit_message_text("❌ No longer available.",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🛒 Browse Others", callback_data="menu_buy")]])); return
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(f"🛒 {b('Browse Others')}", callback_data="menu_buy")]])); return
     balance = get_balance(user_id)
     has_funds = balance >= float(acc["price"])
     await query.edit_message_text(
@@ -693,8 +706,8 @@ async def view_account(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f"━━━━━━━━━━━━━━━━━━━━━━",
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("✅ Buy Now", callback_data=f"confirm_{acc_id}")],
-            [InlineKeyboardButton("🔙 Back",    callback_data="menu_buy")]]))
+            [InlineKeyboardButton(f"✅ {b('Buy Now')}", callback_data=f"confirm_{acc_id}")],
+            [InlineKeyboardButton(f"🔙 {b('Back')}",    callback_data="menu_buy")]]))
 
 async def confirm_buy(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -718,8 +731,8 @@ async def confirm_buy(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 f"💵 Required:     *${acc['price']:.2f}*",
                 parse_mode="Markdown",
                 reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("💰 Deposit Now", callback_data="menu_deposit")],
-                    [InlineKeyboardButton("🔙 Back",        callback_data="menu_back")]
+                    [InlineKeyboardButton(f"💰 {b('Deposit Now')}", callback_data="menu_deposit")],
+                    [InlineKeyboardButton(f"🔙 {b('Back')}",        callback_data="menu_back")]
                 ])
             )
             return
@@ -830,7 +843,7 @@ async def cmd_prices(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "\n".join(lines),
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("💰 Sell Account", callback_data="menu_sell")]
+            [InlineKeyboardButton(f"💰 {b('Sell Account')}", callback_data="menu_sell")]
         ])
     )
 
@@ -849,8 +862,8 @@ def _prices_panel_keyboard(rows):
                 callback_data=f"ap_view_{r['country_code']}"
             )
         ])
-    buttons.append([InlineKeyboardButton("➕ Add Country", callback_data="ap_add")])
-    buttons.append([InlineKeyboardButton("🔙 Close Panel", callback_data="ap_close")])
+    buttons.append([InlineKeyboardButton(f"➕ {b('Add Country')}", callback_data="ap_add")])
+    buttons.append([InlineKeyboardButton(f"🔙 {b('Close Panel')}", callback_data="ap_close")])
     return InlineKeyboardMarkup(buttons)
 
 async def admin_prices_panel(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -916,9 +929,9 @@ async def ap_view(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f"What would you like to do?",
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("✏️ Edit Price", callback_data=f"ap_edit_{code}")],
-            [InlineKeyboardButton("🗑 Delete",     callback_data=f"ap_del_{code}")],
-            [InlineKeyboardButton("🔙 Back",       callback_data="ap_back")],
+            [InlineKeyboardButton(f"✏️ {b('Edit Price')}", callback_data=f"ap_edit_{code}")],
+            [InlineKeyboardButton(f"🗑 {b('Delete')}",     callback_data=f"ap_del_{code}")],
+            [InlineKeyboardButton(f"🔙 {b('Back')}",       callback_data="ap_back")],
         ])
     )
 
@@ -979,8 +992,8 @@ async def ap_del(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f"🗑 Are you sure you want to delete <code>{code}</code>?",
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("✅ Yes, Delete", callback_data=f"ap_delconfirm_{code}")],
-            [InlineKeyboardButton("❌ Cancel",      callback_data=f"ap_view_{code}")],
+            [InlineKeyboardButton(f"✅ {b('Yes, Delete')}", callback_data=f"ap_delconfirm_{code}")],
+            [InlineKeyboardButton(f"❌ {b('Cancel')}",      callback_data=f"ap_view_{code}")],
         ])
     )
 
@@ -1278,9 +1291,9 @@ async def show_balance(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f"🤝 Referral Earned: *${get_referral_earnings(user.id):.2f}*\n━━━━━━━━━━━━━━━━━━━━━━",
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("💰 Deposit",  callback_data="menu_deposit"),
-             InlineKeyboardButton("💸 Withdraw", callback_data="menu_withdraw")],
-            [InlineKeyboardButton("🔙 Back to Menu", callback_data="menu_back")]]))
+            [InlineKeyboardButton(f"💰 {b('Deposit')}",  callback_data="menu_deposit"),
+             InlineKeyboardButton(f"💸 {b('Withdraw')}", callback_data="menu_withdraw")],
+            [InlineKeyboardButton(f"🔙 {b('Back to Menu')}", callback_data="menu_back")]]))
 
 async def refer_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -1308,8 +1321,8 @@ async def withdraw_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f"━━━━━━━━━━━━━━━━━━━━━━\n📩 Contact support with:\n  • Withdrawal amount\n  • Payment method & details\n━━━━━━━━━━━━━━━━━━━━━━",
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("🆘 Contact Support", url=f"https://t.me/{SUPPORT_USERNAME}")],
-            [InlineKeyboardButton("🔙 Back to Menu",    callback_data="menu_back")]]))
+            [InlineKeyboardButton(f"🆘 {b('Contact Support')}", url=f"https://t.me/{SUPPORT_USERNAME}")],
+            [InlineKeyboardButton(f"🔙 {b('Back to Menu')}",    callback_data="menu_back")]]))
     # Post withdrawal request to funds channel
     await send_to_channel(query.bot, FUNDS_CHANNEL,
         f"💸 <b>WITHDRAWAL REQUEST</b>\n"
