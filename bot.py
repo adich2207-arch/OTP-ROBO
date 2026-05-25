@@ -29,7 +29,23 @@ API_ID           = int(os.getenv("API_ID", "0"))
 API_HASH         = os.getenv("API_HASH", "")
 REFERRAL_COMMISSION = 0.02
 
+# ── Channel IDs ───────────────────────────────────────────────────────────────
+# FUNDS_CHANNEL  : deposit & withdrawal requests go here (admin approves from here)
+# TRADES_CHANNEL : buy/sell/add account activity goes here
+FUNDS_CHANNEL  = int(os.getenv("FUNDS_CHANNEL_ID",  "0"))
+TRADES_CHANNEL = int(os.getenv("TRADES_CHANNEL_ID", "0"))
+
 ptb_app: Application = None
+
+# ── Channel helper ────────────────────────────────────────────────────────────
+async def send_to_channel(bot, channel_id: int, text: str, parse_mode: str = "HTML", reply_markup=None):
+    """Send a message to a channel. Silently skips if channel_id is 0 or not configured."""
+    if not channel_id:
+        return
+    try:
+        await bot.send_message(channel_id, text, parse_mode=parse_mode, reply_markup=reply_markup)
+    except Exception as e:
+        logger.warning(f"Channel send failed (channel={channel_id}): {e}")
 
 (DEPOSIT_AMOUNT, ADMIN_PHONE, ADMIN_OTP, ADMIN_ADD_PRICE,
  SELL_PHONE, SELL_OTP, SELL_PRICE) = range(7)
@@ -219,12 +235,24 @@ async def deposit_amount(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         dep_id = conn.execute(
             "INSERT INTO deposits (user_id, amount) VALUES (%s,%s) RETURNING id",
             (user.id, amount)).fetchone()["id"]
+    # Notify admin directly
     await ctx.bot.send_message(ADMIN_ID,
         f"📥 *NEW DEPOSIT REQUEST*\n━━━━━━━━━━━━━━━━━━━━━━\n"
         f"👤 User: @{user.username or user.first_name} (`{user.id}`)\n"
         f"💵 Amount: *${amount:.2f}*\n🆔 Deposit ID: `{dep_id}`\n"
         f"━━━━━━━━━━━━━━━━━━━━━━\n✅ /approve_{dep_id}\n❌ /reject_{dep_id}\n"
         f"💳 /credit {user.id} {amount:.2f}", parse_mode="Markdown")
+    # Post to funds channel
+    await send_to_channel(ctx.bot, FUNDS_CHANNEL,
+        f"📥 <b>DEPOSIT REQUEST</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"👤 User: @{user.username or user.first_name} (<code>{user.id}</code>)\n"
+        f"💵 Amount: <b>${amount:.2f}</b>\n"
+        f"🆔 Deposit ID: <code>{dep_id}</code>\n"
+        f"📊 Status: <b>Pending</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"✅ /approve_{dep_id}   ❌ /reject_{dep_id}"
+    )
     await update.message.reply_text(
         f"✅ *Deposit Request Submitted!*\n\n💵 Amount: *${amount:.2f}*\n🆔 Reference ID: `{dep_id}`\n\n"
         f"⏳ Admin will verify and credit your balance shortly.",
@@ -259,6 +287,15 @@ async def admin_approve(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await ctx.bot.send_message(dep["user_id"],
         f"🎉 *Deposit Approved!*\n\n💵 *${dep['amount']:.2f}* added to your wallet.\n🆔 Ref: `{dep_id}`\n\nStart shopping! 🛒",
         parse_mode="Markdown", reply_markup=main_menu_keyboard())
+    await send_to_channel(ctx.bot, FUNDS_CHANNEL,
+        f"✅ <b>DEPOSIT APPROVED</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"🆔 Deposit ID: <code>{dep_id}</code>\n"
+        f"👤 User: <code>{dep['user_id']}</code>\n"
+        f"💵 Amount: <b>${dep['amount']:.2f}</b>\n"
+        f"📊 Status: <b>✅ Approved</b>"
+        + (f"\n🤝 Referral commission: <b>${commission:.2f}</b>" if commission else "")
+    )
     if referrer and referrer["referred_by"] and commission > 0:
         try:
             await ctx.bot.send_message(referrer["referred_by"],
@@ -282,6 +319,14 @@ async def admin_reject(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await ctx.bot.send_message(dep["user_id"],
         f"❌ *Deposit Rejected*\n\nYour deposit of *${dep['amount']:.2f}* (ID: `{dep_id}`) was not approved.\nContact 🆘 Support if this is an error.",
         parse_mode="Markdown", reply_markup=main_menu_keyboard())
+    await send_to_channel(ctx.bot, FUNDS_CHANNEL,
+        f"❌ <b>DEPOSIT REJECTED</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"🆔 Deposit ID: <code>{dep_id}</code>\n"
+        f"👤 User: <code>{dep['user_id']}</code>\n"
+        f"💵 Amount: <b>${dep['amount']:.2f}</b>\n"
+        f"📊 Status: <b>❌ Rejected</b>"
+    )
 
 # ── Admin: credit / deduct ────────────────────────────────────────────────────
 async def admin_credit(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -408,6 +453,16 @@ async def set_price(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         f"🎉 *Account #{acc_id} Added!*\n\n💵 Price: *${price:.2f}*\n🟢 Now visible in the marketplace.",
         parse_mode="Markdown")
+    # Post to trades channel
+    await send_to_channel(ctx.bot, TRADES_CHANNEL,
+        f"➕ <b>ACCOUNT LISTED BY ADMIN</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"🆔 Account ID: <code>#{acc_id}</code>\n"
+        f"📱 Phone: <code>{ctx.user_data.get('phone', 'N/A')}</code>\n"
+        f"💵 Price: <b>${price:.2f}</b>\n"
+        f"📊 Status: <b>🟢 Available</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━"
+    )
     return ConversationHandler.END
 
 # ── Admin: view commands ──────────────────────────────────────────────────────
@@ -730,6 +785,18 @@ async def confirm_buy(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f"🔑 Account *#{acc_id}* sold to `{user_id}` for *${acc['price']:.2f}*.\n"
         f"📱 Phone: `{phone}`",
         parse_mode="Markdown"
+    )
+    # Post to trades channel
+    buyer = await ctx.bot.get_chat(user_id)
+    buyer_name = f"@{buyer.username}" if buyer.username else buyer.first_name
+    await send_to_channel(ctx.bot, TRADES_CHANNEL,
+        f"🛒 <b>ACCOUNT SOLD</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"🔑 Account ID: <code>#{acc_id}</code>\n"
+        f"📱 Phone: <code>{phone}</code>\n"
+        f"💵 Price: <b>${acc['price']:.2f}</b>\n"
+        f"👤 Buyer: {buyer_name} (<code>{user_id}</code>)\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━"
     )
 
 
@@ -1148,10 +1215,22 @@ async def sell_get_otp(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
         # Store pending sell in DB for admin to approve
         with get_db() as conn:
-            conn.execute(
-                "INSERT INTO accounts (session, phone, price, status) VALUES (%s,%s,%s,'pending_review')",
+            new_acc = conn.execute(
+                "INSERT INTO accounts (session, phone, price, status) VALUES (%s,%s,%s,'pending_review') RETURNING id",
                 (session_string, phone, 0)
-            )
+            ).fetchone()
+            acc_id = new_acc["id"]
+
+        # Post to trades channel
+        await send_to_channel(update.message.bot, TRADES_CHANNEL,
+            f"💰 <b>NEW ACCOUNT SUBMITTED FOR SALE</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"🆔 Account ID: <code>#{acc_id}</code>\n"
+            f"📱 Phone: <code>{phone}</code>\n"
+            f"👤 Seller: @{user.username or user.first_name} (<code>{user.id}</code>)\n"
+            f"📊 Status: <b>Pending Review</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━"
+        )
 
         await update.message.reply_text(
             f"✅ <b>Account Submitted!</b>\n\n"
@@ -1221,14 +1300,26 @@ async def refer_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def withdraw_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
+    user    = query.from_user
+    balance = get_balance(user.id)
     await query.edit_message_text(
         f"╔══════════════════════╗\n      💸 *WITHDRAW*\n╚══════════════════════╝\n\n"
-        f"To withdraw, contact our support team.\n\n💰 Your Balance: *${get_balance(query.from_user.id):.2f}*\n\n"
+        f"To withdraw, contact our support team.\n\n💰 Your Balance: *${balance:.2f}*\n\n"
         f"━━━━━━━━━━━━━━━━━━━━━━\n📩 Contact support with:\n  • Withdrawal amount\n  • Payment method & details\n━━━━━━━━━━━━━━━━━━━━━━",
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("🆘 Contact Support", url=f"https://t.me/{SUPPORT_USERNAME}")],
             [InlineKeyboardButton("🔙 Back to Menu",    callback_data="menu_back")]]))
+    # Post withdrawal request to funds channel
+    await send_to_channel(query.bot, FUNDS_CHANNEL,
+        f"💸 <b>WITHDRAWAL REQUEST</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"👤 User: @{user.username or user.first_name} (<code>{user.id}</code>)\n"
+        f"💰 Balance: <b>${balance:.2f}</b>\n"
+        f"📊 Status: <b>Pending — awaiting support contact</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"User has been directed to contact support."
+    )
 
 # ── Flask + Main ──────────────────────────────────────────────────────────────
 def build_app() -> Application:
