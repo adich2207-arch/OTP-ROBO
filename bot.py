@@ -88,7 +88,7 @@ def phone_to_country(phone: str) -> tuple:
     return "🌍", "Unknown"
 
 (DEPOSIT_AMOUNT, ADMIN_PHONE, ADMIN_OTP, ADMIN_ADD_PRICE,
- SELL_PHONE, SELL_OTP, SELL_PRICE, WITHDRAW_AMOUNT) = range(8)
+ SELL_PHONE, SELL_OTP, SELL_PRICE, WITHDRAW_UPI, WITHDRAW_AMOUNT) = range(9)
 
 # ── Database ──────────────────────────────────────────────────────────────────
 def get_db():
@@ -126,8 +126,10 @@ def init_db():
             id BIGSERIAL PRIMARY KEY,
             user_id BIGINT,
             amount NUMERIC(12,2),
+            upi_id TEXT DEFAULT '',
             status TEXT DEFAULT 'pending',
             created_at TIMESTAMPTZ DEFAULT NOW())""")
+        conn.execute("ALTER TABLE withdrawals ADD COLUMN IF NOT EXISTS upi_id TEXT DEFAULT ''")
     logger.info("✅ Database initialised.")
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -1354,26 +1356,61 @@ async def refer_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         parse_mode="Markdown", reply_markup=back_keyboard())
 
 async def withdraw_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Entry point — ask user how much they want to withdraw."""
+    """Step 1 — Ask for UPI ID or QR code."""
     query = update.callback_query
     await query.answer()
-    user    = query.from_user
-    balance = get_balance(user.id)
+    balance = get_balance(query.from_user.id)
     await query.edit_message_text(
         f"╔══════════════════════╗\n      💸 *WITHDRAW*\n╚══════════════════════╝\n\n"
         f"💰 Your Balance: *${balance:.2f}*\n\n"
         f"━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"Enter the amount you want to withdraw.\n\n"
-        f"📌 *Example:* `10`\n\n"
+        f"📲 *Step 1 of 2*\n\n"
+        f"Send your *UPI ID* or a *QR code photo* to receive payment.\n\n"
+        f"📌 UPI example: `yourname@upi`\n"
+        f"📌 Or send a QR code image\n\n"
         f"━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"✏️ Send amount or /cancel to go back:",
+        f"Type /cancel to go back.",
+        parse_mode="Markdown")
+    return WITHDRAW_UPI
+
+async def withdraw_upi(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Step 2 — Got UPI/QR, now ask for amount."""
+    user = update.effective_user
+    ensure_user(user.id, user.username or "")
+
+    # Accept either text (UPI ID) or photo (QR code)
+    if update.message.photo:
+        # Store the file_id of the largest photo
+        ctx.user_data["wd_upi"] = update.message.photo[-1].file_id
+        ctx.user_data["wd_upi_type"] = "qr"
+        upi_display = "QR Code received ✅"
+    elif update.message.text:
+        upi_text = update.message.text.strip()
+        ctx.user_data["wd_upi"] = upi_text
+        ctx.user_data["wd_upi_type"] = "upi"
+        upi_display = f"`{upi_text}`"
+    else:
+        await update.message.reply_text(
+            "❌ Please send your UPI ID as text or a QR code as a photo.",
+            parse_mode="Markdown")
+        return WITHDRAW_UPI
+
+    balance = get_balance(user.id)
+    await update.message.reply_text(
+        f"✅ Payment details received: {upi_display}\n\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"💰 *Step 2 of 2*\n\n"
+        f"Your current balance: *${balance:.2f}*\n\n"
+        f"How much do you want to withdraw?\n"
+        f"📌 Example: `10`\n\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"Type /cancel to go back.",
         parse_mode="Markdown")
     return WITHDRAW_AMOUNT
 
 async def withdraw_amount(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """User sent withdrawal amount — validate and submit."""
+    """Step 3 — Got amount, validate balance and submit request."""
     user = update.effective_user
-    ensure_user(user.id, user.username or "")
     try:
         amount = float(update.message.text.strip())
         if amount <= 0:
@@ -1390,16 +1427,19 @@ async def withdraw_amount(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             f"❌ *Insufficient Balance*\n\n"
             f"💰 Your balance: *${balance:.2f}*\n"
             f"💸 Requested:    *${amount:.2f}*\n\n"
-            f"You can only withdraw up to *${balance:.2f}*.",
-            parse_mode="Markdown",
-            reply_markup=main_menu_keyboard())
-        return ConversationHandler.END
+            f"You can only withdraw up to *${balance:.2f}*.\n"
+            f"Please enter a lower amount:",
+            parse_mode="Markdown")
+        return WITHDRAW_AMOUNT
+
+    upi_val  = ctx.user_data.get("wd_upi", "")
+    upi_type = ctx.user_data.get("wd_upi_type", "upi")
 
     # Deduct balance and record withdrawal
     with get_db() as conn:
         wd_id = conn.execute(
-            "INSERT INTO withdrawals (user_id, amount) VALUES (%s,%s) RETURNING id",
-            (user.id, amount)
+            "INSERT INTO withdrawals (user_id, amount, upi_id) VALUES (%s,%s,%s) RETURNING id",
+            (user.id, amount, upi_val if upi_type == "upi" else "[QR Code]")
         ).fetchone()["id"]
         conn.execute(
             "UPDATE users SET balance=balance-%s WHERE user_id=%s",
@@ -1417,30 +1457,45 @@ async def withdraw_amount(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         parse_mode="Markdown",
         reply_markup=main_menu_keyboard())
 
-    # Notify admin
-    await ctx.bot.send_message(
-        ADMIN_ID,
+    # Build channel/admin message
+    upi_line = (
+        f"📲 UPI ID: `{upi_val}`" if upi_type == "upi"
+        else "📲 Payment: QR Code (see below)"
+    )
+
+    admin_text = (
         f"💸 *NEW WITHDRAWAL REQUEST*\n"
         f"━━━━━━━━━━━━━━━━━━━━━━\n"
         f"👤 User: @{user.username or user.first_name} (`{user.id}`)\n"
         f"💵 Amount: *${amount:.2f}*\n"
+        f"{upi_line}\n"
         f"🆔 Withdrawal ID: `{wd_id}`\n"
         f"━━━━━━━━━━━━━━━━━━━━━━\n"
         f"✅ /wd_approve_{wd_id}\n"
-        f"❌ /wd_reject_{wd_id}",
-        parse_mode="Markdown")
+        f"❌ /wd_reject_{wd_id}"
+    )
 
-    # Post to funds channel
-    await send_to_channel(ctx.bot, FUNDS_CHANNEL,
+    # Channel gets NO username, NO UPI — only chat ID, amount, status
+    channel_text = (
         f"💸 <b>WITHDRAWAL REQUEST</b>\n"
         f"━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"👤 User: @{user.username or user.first_name} (<code>{user.id}</code>)\n"
+        f"🆔 User ID: <code>{user.id}</code>\n"
         f"💵 Amount: <b>${amount:.2f}</b>\n"
-        f"🆔 Withdrawal ID: <code>{wd_id}</code>\n"
+        f"� Withdrawal ID: <code>{wd_id}</code>\n"
         f"📊 Status: <b>⏳ Pending</b>\n"
         f"━━━━━━━━━━━━━━━━━━━━━━\n"
         f"✅ /wd_approve_{wd_id}   ❌ /wd_reject_{wd_id}"
     )
+
+    if upi_type == "qr":
+        # Admin gets QR photo with full details
+        await ctx.bot.send_photo(ADMIN_ID, photo=upi_val, caption=admin_text, parse_mode="Markdown")
+        # Channel gets text only — no QR, no UPI
+        await send_to_channel(ctx.bot, FUNDS_CHANNEL, channel_text)
+    else:
+        await ctx.bot.send_message(ADMIN_ID, admin_text, parse_mode="Markdown")
+        await send_to_channel(ctx.bot, FUNDS_CHANNEL, channel_text)
+
     return ConversationHandler.END
 
 async def wd_approve(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -1525,7 +1580,13 @@ def build_app() -> Application:
         fallbacks=[CommandHandler("cancel", cancel)], per_message=False)
     withdraw_conv = ConversationHandler(
         entry_points=[CallbackQueryHandler(withdraw_menu, pattern="^menu_withdraw$")],
-        states={WITHDRAW_AMOUNT: [MessageHandler(filters.TEXT & ~filters.COMMAND, withdraw_amount)]},
+        states={
+            WITHDRAW_UPI: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, withdraw_upi),
+                MessageHandler(filters.PHOTO, withdraw_upi),
+            ],
+            WITHDRAW_AMOUNT: [MessageHandler(filters.TEXT & ~filters.COMMAND, withdraw_amount)],
+        },
         fallbacks=[CommandHandler("cancel", cancel)], per_message=False)
     login_conv = ConversationHandler(
         entry_points=[CommandHandler("login_account", admin_login)],
