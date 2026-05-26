@@ -88,7 +88,12 @@ def phone_to_country(phone: str) -> tuple:
     return "🌍", "Unknown"
 
 (DEPOSIT_AMOUNT, ADMIN_PHONE, ADMIN_OTP, ADMIN_ADD_PRICE,
- SELL_PHONE, SELL_OTP, SELL_PRICE, WITHDRAW_UPI, WITHDRAW_AMOUNT) = range(9)
+ SELL_PHONE, SELL_OTP, SELL_PRICE, WITHDRAW_UPI, WITHDRAW_AMOUNT,
+ DEPOSIT_SCREENSHOT) = range(10)
+
+# ── Payment details (set these in Render env vars) ────────────────────────────
+PAYMENT_UPI = os.getenv("PAYMENT_UPI", "yourname@upi")
+PAYMENT_QR  = os.getenv("PAYMENT_QR_FILE_ID", "")  # Telegram file_id of QR photo
 
 # ── Database ──────────────────────────────────────────────────────────────────
 def get_db():
@@ -258,18 +263,20 @@ async def cancel(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 # ── DEPOSIT ───────────────────────────────────────────────────────────────────
 async def deposit_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Step 1 — Ask how much they want to deposit."""
     query = update.callback_query
     await query.answer()
     await query.edit_message_text(
-        f"╔══════════════════════╗\n      {pe(PE_RECHARGE,'💵')} <b>RECHARGE</b>\n╚══════════════════════╝\n\n"
-        "Send the amount you wish to recharge.\n\n📌 <b>Example:</b> <code>50</code>\n\n"
-        "━━━━━━━━━━━━━━━━━━━━━━\nAfter submitting, the admin will verify\n"
-        "your payment and credit your balance.\n━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"╔══════════════════════╗\n      💵 <b>RECHARGE</b>\n╚══════════════════════╝\n\n"
+        "Enter the amount in USD you want to deposit.\n\n"
+        "📌 <b>Example:</b> <code>50</code>\n\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n"
         "✏️ Enter amount or /cancel to go back:",
         parse_mode="HTML")
     return DEPOSIT_AMOUNT
 
 async def deposit_amount(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Step 2 — Show UPI + QR code and ask for payment screenshot."""
     user = update.effective_user
     ensure_user(user.id, user.username or "")
     try:
@@ -277,37 +284,167 @@ async def deposit_amount(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if amount <= 0:
             raise ValueError
     except ValueError:
-        await update.message.reply_text("❌ *Invalid amount.* Enter a positive number like `25`.", parse_mode="Markdown")
+        await update.message.reply_text(
+            "❌ *Invalid amount.* Enter a positive number like `25`.",
+            parse_mode="Markdown")
         return DEPOSIT_AMOUNT
+
+    ctx.user_data["dep_amount"] = amount
+
+    msg = (
+        f"💵 *Amount to Pay:* `${amount:.2f}`\n\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"📲 *Pay via UPI:*\n`{PAYMENT_UPI}`\n\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"📸 After payment, send the *screenshot* of your payment here.\n\n"
+        f"⚠️ Your deposit will be credited after admin verifies the screenshot."
+    )
+
+    if PAYMENT_QR:
+        # Send QR photo with payment details as caption
+        await update.message.reply_photo(
+            photo=PAYMENT_QR,
+            caption=msg,
+            parse_mode="Markdown")
+    else:
+        await update.message.reply_text(msg, parse_mode="Markdown")
+
+    return DEPOSIT_SCREENSHOT
+
+async def deposit_screenshot(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Step 3 — Receive screenshot, create deposit record, notify admin with inline buttons."""
+    user   = update.effective_user
+    amount = ctx.user_data.get("dep_amount", 0)
+
+    if not update.message.photo:
+        await update.message.reply_text(
+            "❌ Please send a *screenshot photo* of your payment.",
+            parse_mode="Markdown")
+        return DEPOSIT_SCREENSHOT
+
+    photo_id = update.message.photo[-1].file_id
+
     with get_db() as conn:
         dep_id = conn.execute(
             "INSERT INTO deposits (user_id, amount) VALUES (%s,%s) RETURNING id",
-            (user.id, amount)).fetchone()["id"]
-    # Notify admin directly
-    await ctx.bot.send_message(ADMIN_ID,
-        f"📥 *NEW DEPOSIT REQUEST*\n━━━━━━━━━━━━━━━━━━━━━━\n"
+            (user.id, amount)
+        ).fetchone()["id"]
+
+    # Inline buttons for admin
+    admin_kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("✅ Approve", callback_data=f"dep_approve_{dep_id}"),
+         InlineKeyboardButton("❌ Reject",  callback_data=f"dep_reject_{dep_id}")]
+    ])
+
+    admin_caption = (
+        f"📥 *NEW DEPOSIT REQUEST*\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n"
         f"👤 User: @{user.username or user.first_name} (`{user.id}`)\n"
-        f"💵 Amount: *${amount:.2f}*\n🆔 Deposit ID: `{dep_id}`\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━\n✅ /approve_{dep_id}\n❌ /reject_{dep_id}\n"
-        f"💳 /credit {user.id} {amount:.2f}", parse_mode="Markdown")
-    # Post to funds channel
+        f"💵 Amount: *${amount:.2f}*\n"
+        f"🆔 Deposit ID: `{dep_id}`\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"📸 Payment screenshot attached."
+    )
+
+    # Send screenshot + buttons to admin only
+    await ctx.bot.send_photo(
+        ADMIN_ID,
+        photo=photo_id,
+        caption=admin_caption,
+        parse_mode="Markdown",
+        reply_markup=admin_kb)
+
+    # Channel gets NO screenshot — just basic info
     await send_to_channel(ctx.bot, FUNDS_CHANNEL,
         f"📥 <b>DEPOSIT REQUEST</b>\n"
         f"━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"👤 User: @{user.username or user.first_name} (<code>{user.id}</code>)\n"
+        f"🆔 User ID: <code>{user.id}</code>\n"
         f"💵 Amount: <b>${amount:.2f}</b>\n"
-        f"🆔 Deposit ID: <code>{dep_id}</code>\n"
-        f"📊 Status: <b>Pending</b>\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"✅ /approve_{dep_id}   ❌ /reject_{dep_id}"
+        f"🔖 Deposit ID: <code>{dep_id}</code>\n"
+        f"📊 Status: <b>⏳ Pending</b>"
     )
+
     await update.message.reply_text(
-        f"✅ *Deposit Request Submitted!*\n\n💵 Amount: *${amount:.2f}*\n🆔 Reference ID: `{dep_id}`\n\n"
-        f"⏳ Admin will verify and credit your balance shortly.",
-        parse_mode="Markdown", reply_markup=main_menu_keyboard())
+        f"✅ *Screenshot received!*\n\n"
+        f"💵 Amount: *${amount:.2f}*\n"
+        f"🆔 Reference ID: `{dep_id}`\n\n"
+        f"⏳ Admin will verify your payment and credit your balance shortly.",
+        parse_mode="Markdown",
+        reply_markup=main_menu_keyboard())
     return ConversationHandler.END
 
+# ── Deposit inline approve/reject (callback buttons) ─────────────────────────
+async def dep_approve_cb(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Admin taps ✅ Approve on deposit message."""
+    query = update.callback_query
+    if query.from_user.id != ADMIN_ID:
+        await query.answer("Not authorised.", show_alert=True); return
+    dep_id = int(query.data.split("_")[2])
+    with get_db() as conn:
+        dep = conn.execute("SELECT * FROM deposits WHERE id=%s", (dep_id,)).fetchone()
+        if not dep:
+            await query.answer("Not found.", show_alert=True); return
+        if dep["status"] != "pending":
+            await query.answer("Already processed.", show_alert=True); return
+        conn.execute("UPDATE deposits SET status='approved' WHERE id=%s", (dep_id,))
+        conn.execute("UPDATE users SET balance=balance+%s WHERE user_id=%s", (dep["amount"], dep["user_id"]))
+        referrer = conn.execute("SELECT referred_by FROM users WHERE user_id=%s", (dep["user_id"],)).fetchone()
+        commission = 0.0
+        if referrer and referrer["referred_by"]:
+            commission = float(dep["amount"]) * REFERRAL_COMMISSION
+            conn.execute("UPDATE users SET balance=balance+%s WHERE user_id=%s", (commission, referrer["referred_by"]))
+            conn.execute("INSERT INTO referral_earnings (referrer_id,referred_id,deposit_id,commission) VALUES (%s,%s,%s,%s)",
+                (referrer["referred_by"], dep["user_id"], dep_id, commission))
+    await query.edit_message_caption(
+        caption=f"✅ *Deposit #{dep_id} APPROVED*\n💵 ${dep['amount']:.2f} credited to `{dep['user_id']}`",
+        parse_mode="Markdown")
+    await ctx.bot.send_message(dep["user_id"],
+        f"🎉 *Deposit Approved!*\n\n💵 *${dep['amount']:.2f}* added to your wallet.\n🆔 Ref: `{dep_id}`\n\nStart shopping! 🛒",
+        parse_mode="Markdown", reply_markup=main_menu_keyboard())
+    await send_to_channel(ctx.bot, FUNDS_CHANNEL,
+        f"✅ <b>DEPOSIT APPROVED</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"🆔 Deposit ID: <code>{dep_id}</code>\n"
+        f"🆔 User ID: <code>{dep['user_id']}</code>\n"
+        f"💵 Amount: <b>${dep['amount']:.2f}</b>\n"
+        f"📊 Status: <b>✅ Approved</b>"
+        + (f"\n🤝 Referral: <b>${commission:.2f}</b>" if commission else ""))
+    if referrer and referrer["referred_by"] and commission > 0:
+        try:
+            await ctx.bot.send_message(referrer["referred_by"],
+                f"💰 *Referral Commission!*\nYou earned *${commission:.2f}*!", parse_mode="Markdown")
+        except Exception:
+            pass
+    await query.answer("✅ Approved!")
+
+async def dep_reject_cb(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Admin taps ❌ Reject on deposit message."""
+    query = update.callback_query
+    if query.from_user.id != ADMIN_ID:
+        await query.answer("Not authorised.", show_alert=True); return
+    dep_id = int(query.data.split("_")[2])
+    with get_db() as conn:
+        dep = conn.execute("SELECT * FROM deposits WHERE id=%s", (dep_id,)).fetchone()
+        if not dep or dep["status"] != "pending":
+            await query.answer("Not found or already processed.", show_alert=True); return
+        conn.execute("UPDATE deposits SET status='rejected' WHERE id=%s", (dep_id,))
+    await query.edit_message_caption(
+        caption=f"❌ *Deposit #{dep_id} REJECTED*",
+        parse_mode="Markdown")
+    await ctx.bot.send_message(dep["user_id"],
+        f"❌ *Deposit Rejected*\n\nYour deposit of *${dep['amount']:.2f}* (ID: `{dep_id}`) was not approved.\nContact 🆘 Support if this is an error.",
+        parse_mode="Markdown", reply_markup=main_menu_keyboard())
+    await send_to_channel(ctx.bot, FUNDS_CHANNEL,
+        f"❌ <b>DEPOSIT REJECTED</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"🆔 Deposit ID: <code>{dep_id}</code>\n"
+        f"🆔 User ID: <code>{dep['user_id']}</code>\n"
+        f"💵 Amount: <b>${dep['amount']:.2f}</b>\n"
+        f"📊 Status: <b>❌ Rejected</b>")
+    await query.answer("❌ Rejected.")
+
 async def admin_approve(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Legacy text command fallback: /approve_<id>"""
     if update.effective_user.id != ADMIN_ID:
         return
     try:
@@ -335,15 +472,6 @@ async def admin_approve(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await ctx.bot.send_message(dep["user_id"],
         f"🎉 *Deposit Approved!*\n\n💵 *${dep['amount']:.2f}* added to your wallet.\n🆔 Ref: `{dep_id}`\n\nStart shopping! 🛒",
         parse_mode="Markdown", reply_markup=main_menu_keyboard())
-    await send_to_channel(ctx.bot, FUNDS_CHANNEL,
-        f"✅ <b>DEPOSIT APPROVED</b>\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"🆔 Deposit ID: <code>{dep_id}</code>\n"
-        f"👤 User: <code>{dep['user_id']}</code>\n"
-        f"💵 Amount: <b>${dep['amount']:.2f}</b>\n"
-        f"📊 Status: <b>✅ Approved</b>"
-        + (f"\n🤝 Referral commission: <b>${commission:.2f}</b>" if commission else "")
-    )
     if referrer and referrer["referred_by"] and commission > 0:
         try:
             await ctx.bot.send_message(referrer["referred_by"],
@@ -352,6 +480,7 @@ async def admin_approve(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             pass
 
 async def admin_reject(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Legacy text command fallback: /reject_<id>"""
     if update.effective_user.id != ADMIN_ID:
         return
     try:
@@ -367,14 +496,6 @@ async def admin_reject(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await ctx.bot.send_message(dep["user_id"],
         f"❌ *Deposit Rejected*\n\nYour deposit of *${dep['amount']:.2f}* (ID: `{dep_id}`) was not approved.\nContact 🆘 Support if this is an error.",
         parse_mode="Markdown", reply_markup=main_menu_keyboard())
-    await send_to_channel(ctx.bot, FUNDS_CHANNEL,
-        f"❌ <b>DEPOSIT REJECTED</b>\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"🆔 Deposit ID: <code>{dep_id}</code>\n"
-        f"👤 User: <code>{dep['user_id']}</code>\n"
-        f"💵 Amount: <b>${dep['amount']:.2f}</b>\n"
-        f"📊 Status: <b>❌ Rejected</b>"
-    )
 
 # ── Admin: credit / deduct ────────────────────────────────────────────────────
 async def admin_credit(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -1457,7 +1578,12 @@ async def withdraw_amount(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         parse_mode="Markdown",
         reply_markup=main_menu_keyboard())
 
-    # Build channel/admin message
+    # Inline buttons for admin
+    wd_kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("✅ Approve", callback_data=f"wd_approve_{wd_id}"),
+         InlineKeyboardButton("❌ Reject",  callback_data=f"wd_reject_{wd_id}")]
+    ])
+
     upi_line = (
         f"📲 UPI ID: `{upi_val}`" if upi_type == "upi"
         else "📲 Payment: QR Code (see below)"
@@ -1470,9 +1596,7 @@ async def withdraw_amount(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f"💵 Amount: *${amount:.2f}*\n"
         f"{upi_line}\n"
         f"🆔 Withdrawal ID: `{wd_id}`\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"✅ /wd_approve_{wd_id}\n"
-        f"❌ /wd_reject_{wd_id}"
+        f"━━━━━━━━━━━━━━━━━━━━━━"
     )
 
     # Channel gets NO username, NO UPI — only chat ID, amount, status
@@ -1481,41 +1605,62 @@ async def withdraw_amount(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f"━━━━━━━━━━━━━━━━━━━━━━\n"
         f"🆔 User ID: <code>{user.id}</code>\n"
         f"💵 Amount: <b>${amount:.2f}</b>\n"
-        f"� Withdrawal ID: <code>{wd_id}</code>\n"
-        f"📊 Status: <b>⏳ Pending</b>\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"✅ /wd_approve_{wd_id}   ❌ /wd_reject_{wd_id}"
+        f"🔖 Withdrawal ID: <code>{wd_id}</code>\n"
+        f"📊 Status: <b>⏳ Pending</b>"
     )
 
     if upi_type == "qr":
-        # Admin gets QR photo with full details
-        await ctx.bot.send_photo(ADMIN_ID, photo=upi_val, caption=admin_text, parse_mode="Markdown")
-        # Channel gets text only — no QR, no UPI
-        await send_to_channel(ctx.bot, FUNDS_CHANNEL, channel_text)
+        await ctx.bot.send_photo(ADMIN_ID, photo=upi_val, caption=admin_text,
+                                 parse_mode="Markdown", reply_markup=wd_kb)
     else:
-        await ctx.bot.send_message(ADMIN_ID, admin_text, parse_mode="Markdown")
-        await send_to_channel(ctx.bot, FUNDS_CHANNEL, channel_text)
+        await ctx.bot.send_message(ADMIN_ID, admin_text, parse_mode="Markdown", reply_markup=wd_kb)
 
+    await send_to_channel(ctx.bot, FUNDS_CHANNEL, channel_text)
     return ConversationHandler.END
 
 async def wd_approve(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Admin approves a withdrawal: /wd_approve_<id>"""
-    if update.effective_user.id != ADMIN_ID:
-        return
-    try:
-        wd_id = int(update.message.text.split("_")[2])
-    except (IndexError, ValueError):
-        await update.message.reply_text("Usage: /wd_approve_<id>"); return
+    """Admin approves a withdrawal — works as both text command and inline button."""
+    # Handle both callback query and text command
+    if update.callback_query:
+        query = update.callback_query
+        if query.from_user.id != ADMIN_ID:
+            await query.answer("Not authorised.", show_alert=True); return
+        wd_id = int(query.data.split("_")[2])
+    else:
+        if update.effective_user.id != ADMIN_ID: return
+        try:
+            wd_id = int(update.message.text.split("_")[2])
+        except (IndexError, ValueError):
+            await update.message.reply_text("Usage: /wd_approve_<id>"); return
+
     with get_db() as conn:
         wd = conn.execute("SELECT * FROM withdrawals WHERE id=%s", (wd_id,)).fetchone()
         if not wd:
-            await update.message.reply_text("❌ Not found."); return
+            if update.callback_query: await update.callback_query.answer("Not found.", show_alert=True)
+            else: await update.message.reply_text("❌ Not found.")
+            return
         if wd["status"] != "pending":
-            await update.message.reply_text("⚠️ Already processed."); return
+            if update.callback_query: await update.callback_query.answer("Already processed.", show_alert=True)
+            else: await update.message.reply_text("⚠️ Already processed.")
+            return
         conn.execute("UPDATE withdrawals SET status='approved' WHERE id=%s", (wd_id,))
-    await update.message.reply_text(
-        f"✅ Withdrawal #{wd_id} approved! *${wd['amount']:.2f}* paid to user `{wd['user_id']}`.",
-        parse_mode="Markdown")
+
+    if update.callback_query:
+        await update.callback_query.edit_message_caption(
+            caption=f"✅ *Withdrawal #{wd_id} APPROVED*\n💵 ${wd['amount']:.2f} paid to `{wd['user_id']}`",
+            parse_mode="Markdown") if update.callback_query.message.caption else None
+        try:
+            await update.callback_query.edit_message_text(
+                f"✅ *Withdrawal #{wd_id} APPROVED*\n💵 ${wd['amount']:.2f} paid to `{wd['user_id']}`",
+                parse_mode="Markdown")
+        except Exception:
+            pass
+        await update.callback_query.answer("✅ Approved!")
+    else:
+        await update.message.reply_text(
+            f"✅ Withdrawal #{wd_id} approved! *${wd['amount']:.2f}* paid to `{wd['user_id']}`.",
+            parse_mode="Markdown")
+
     await ctx.bot.send_message(
         wd["user_id"],
         f"🎉 *Withdrawal Approved!*\n\n"
@@ -1528,32 +1673,47 @@ async def wd_approve(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f"✅ <b>WITHDRAWAL APPROVED</b>\n"
         f"━━━━━━━━━━━━━━━━━━━━━━\n"
         f"🆔 Withdrawal ID: <code>{wd_id}</code>\n"
-        f"👤 User: <code>{wd['user_id']}</code>\n"
+        f"🆔 User ID: <code>{wd['user_id']}</code>\n"
         f"💵 Amount: <b>${wd['amount']:.2f}</b>\n"
         f"📊 Status: <b>✅ Approved & Paid</b>"
     )
 
 async def wd_reject(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Admin rejects a withdrawal: /wd_reject_<id>"""
-    if update.effective_user.id != ADMIN_ID:
-        return
-    try:
-        wd_id = int(update.message.text.split("_")[2])
-    except (IndexError, ValueError):
-        await update.message.reply_text("Usage: /wd_reject_<id>"); return
+    """Admin rejects a withdrawal — works as both text command and inline button."""
+    if update.callback_query:
+        query = update.callback_query
+        if query.from_user.id != ADMIN_ID:
+            await query.answer("Not authorised.", show_alert=True); return
+        wd_id = int(query.data.split("_")[2])
+    else:
+        if update.effective_user.id != ADMIN_ID: return
+        try:
+            wd_id = int(update.message.text.split("_")[2])
+        except (IndexError, ValueError):
+            await update.message.reply_text("Usage: /wd_reject_<id>"); return
+
     with get_db() as conn:
         wd = conn.execute("SELECT * FROM withdrawals WHERE id=%s", (wd_id,)).fetchone()
         if not wd or wd["status"] != "pending":
-            await update.message.reply_text("❌ Not found or already processed."); return
+            if update.callback_query: await update.callback_query.answer("Not found or already processed.", show_alert=True)
+            else: await update.message.reply_text("❌ Not found or already processed.")
+            return
         conn.execute("UPDATE withdrawals SET status='rejected' WHERE id=%s", (wd_id,))
-        # Refund the balance
-        conn.execute(
-            "UPDATE users SET balance=balance+%s WHERE user_id=%s",
-            (wd["amount"], wd["user_id"])
-        )
-    await update.message.reply_text(
-        f"❌ Withdrawal #{wd_id} rejected. *${wd['amount']:.2f}* refunded to user.",
-        parse_mode="Markdown")
+        conn.execute("UPDATE users SET balance=balance+%s WHERE user_id=%s", (wd["amount"], wd["user_id"]))
+
+    if update.callback_query:
+        try:
+            await update.callback_query.edit_message_text(
+                f"❌ *Withdrawal #{wd_id} REJECTED* — balance refunded.",
+                parse_mode="Markdown")
+        except Exception:
+            pass
+        await update.callback_query.answer("❌ Rejected.")
+    else:
+        await update.message.reply_text(
+            f"❌ Withdrawal #{wd_id} rejected. *${wd['amount']:.2f}* refunded.",
+            parse_mode="Markdown")
+
     await ctx.bot.send_message(
         wd["user_id"],
         f"❌ *Withdrawal Rejected*\n\n"
@@ -1566,7 +1726,7 @@ async def wd_reject(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f"❌ <b>WITHDRAWAL REJECTED</b>\n"
         f"━━━━━━━━━━━━━━━━━━━━━━\n"
         f"🆔 Withdrawal ID: <code>{wd_id}</code>\n"
-        f"👤 User: <code>{wd['user_id']}</code>\n"
+        f"🆔 User ID: <code>{wd['user_id']}</code>\n"
         f"💵 Amount: <b>${wd['amount']:.2f}</b>\n"
         f"📊 Status: <b>❌ Rejected — Refunded</b>"
     )
@@ -1576,7 +1736,10 @@ def build_app() -> Application:
     app = Application.builder().token(BOT_TOKEN).build()
     deposit_conv = ConversationHandler(
         entry_points=[CallbackQueryHandler(deposit_start, pattern="^menu_deposit$")],
-        states={DEPOSIT_AMOUNT: [MessageHandler(filters.TEXT & ~filters.COMMAND, deposit_amount)]},
+        states={
+            DEPOSIT_AMOUNT:     [MessageHandler(filters.TEXT & ~filters.COMMAND, deposit_amount)],
+            DEPOSIT_SCREENSHOT: [MessageHandler(filters.PHOTO, deposit_screenshot)],
+        },
         fallbacks=[CommandHandler("cancel", cancel)], per_message=False)
     withdraw_conv = ConversationHandler(
         entry_points=[CallbackQueryHandler(withdraw_menu, pattern="^menu_withdraw$")],
@@ -1638,6 +1801,12 @@ def build_app() -> Application:
     app.add_handler(CommandHandler("pending",     admin_pending))
     app.add_handler(CommandHandler("credit",      admin_credit))
     app.add_handler(CommandHandler("deduct",      admin_deduct))
+    # Deposit inline approve/reject buttons
+    app.add_handler(CallbackQueryHandler(dep_approve_cb, pattern=r"^dep_approve_\d+$"))
+    app.add_handler(CallbackQueryHandler(dep_reject_cb,  pattern=r"^dep_reject_\d+$"))
+    # Withdrawal inline approve/reject buttons
+    app.add_handler(CallbackQueryHandler(wd_approve, pattern=r"^wd_approve_\d+$"))
+    app.add_handler(CallbackQueryHandler(wd_reject,  pattern=r"^wd_reject_\d+$"))
     app.add_handler(CommandHandler("add_sell",    admin_add_sell))
     app.add_handler(CommandHandler("prices",      cmd_prices))
     app.add_handler(MessageHandler(filters.Regex(r"^/wd_approve_\d+$") & filters.User(ADMIN_ID), wd_approve))
