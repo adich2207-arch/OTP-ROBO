@@ -92,8 +92,9 @@ def phone_to_country(phone: str) -> tuple:
  DEPOSIT_SCREENSHOT) = range(10)
 
 # ── Payment details (set these in Render env vars) ────────────────────────────
-PAYMENT_UPI = os.getenv("PAYMENT_UPI", "yourname@upi")
-PAYMENT_QR  = os.getenv("PAYMENT_QR_FILE_ID", "")  # Telegram file_id of QR photo
+PAYMENT_UPI    = os.getenv("PAYMENT_UPI", "yourname@upi")
+PAYMENT_QR     = os.getenv("PAYMENT_QR_FILE_ID", "")   # Telegram file_id (optional)
+PAYMENT_QR_PATH = os.getenv("PAYMENT_QR_PATH", "qr.png")  # local image file path
 
 # ── Database ──────────────────────────────────────────────────────────────────
 def get_db():
@@ -248,7 +249,7 @@ async def menu_back(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     await query.edit_message_text(
-        f"🏪 <b>TG MARKET</b> — Main Menu\n\n"
+        f"🏪 <b>TG MARKET</b> — Main Menu\n\n"  
         f"{pe(PE_WALLET,'�')} Balance: <b>${get_balance(query.from_user.id):.2f}</b>\n\n"
         f"What would you like to do?\n\n"
         f"{pe(PE_BUY,'🛒')} Buy Account   {pe(PE_SELL,'💰')} Sell Account\n"
@@ -301,11 +302,18 @@ async def deposit_amount(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     )
 
     if PAYMENT_QR:
-        # Send QR photo with payment details as caption
+        # Send QR using Telegram file_id
         await update.message.reply_photo(
             photo=PAYMENT_QR,
             caption=msg,
             parse_mode="Markdown")
+    elif os.path.isfile(PAYMENT_QR_PATH):
+        # Send QR directly from local image file
+        with open(PAYMENT_QR_PATH, "rb") as qr_file:
+            await update.message.reply_photo(
+                photo=qr_file,
+                caption=msg,
+                parse_mode="Markdown")
     else:
         await update.message.reply_text(msg, parse_mode="Markdown")
 
@@ -1889,6 +1897,24 @@ async def wd_reject(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f"💵 Amount: <b>${wd['amount']:.2f}</b>\n"
         f"📊 Status: <b>❌ Rejected — Refunded</b>"
     )
+
+# ── Admin: get file ID from a photo ──────────────────────────────────────────
+async def admin_getfileid(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Admin sends a photo → bot replies with its file_id.
+    Use this to get the PAYMENT_QR_FILE_ID value."""
+    if update.effective_user.id != ADMIN_ID:
+        return
+    if not update.message.photo:
+        await update.message.reply_text(
+            "📸 Send your QR code photo directly to the bot (no command needed).\n\n"
+            "Just send the image and I'll reply with the file ID.")
+        return
+    file_id = update.message.photo[-1].file_id
+    await update.message.reply_text(
+        f"✅ <b>File ID:</b>\n\n<code>{file_id}</code>\n\n"
+        f"Copy this value and set it as <code>PAYMENT_QR_FILE_ID</code> in your environment variables.",
+        parse_mode="HTML")
+
 
 # ── Flask + Main ──────────────────────────────────────────────────────────────
 def build_app() -> Application:
