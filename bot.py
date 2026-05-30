@@ -182,17 +182,17 @@ PE_SUPPORT  = "6296577138615125756"
 # ── Keyboards ─────────────────────────────────────────────────────────────────
 def main_menu_keyboard():
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🛒 Buy Account",   callback_data="menu_buy"),
-         InlineKeyboardButton("💰 Sell Account",  callback_data="menu_sell")],
-        [InlineKeyboardButton("💵 Recharge",      callback_data="menu_deposit"),
-         InlineKeyboardButton("💸 Withdraw",      callback_data="menu_withdraw")],
-        [InlineKeyboardButton("📊 My Wallet",     callback_data="menu_balance"),
-         InlineKeyboardButton("👥 Refer & Earn",  callback_data="menu_refer")],
-        [InlineKeyboardButton("🆘 Support",       url=f"https://t.me/{SUPPORT_USERNAME}")],
+        [InlineKeyboardButton("🛒  Buy Account",    callback_data="menu_buy"),
+         InlineKeyboardButton("💰  Sell Account",   callback_data="menu_sell")],
+        [InlineKeyboardButton("💵  Recharge",       callback_data="menu_deposit"),
+         InlineKeyboardButton("💸  Withdraw",       callback_data="menu_withdraw")],
+        [InlineKeyboardButton("📊  My Wallet",      callback_data="menu_balance"),
+         InlineKeyboardButton("👥  Refer & Earn",   callback_data="menu_refer")],
+        [InlineKeyboardButton("🆘  Support",        url=f"https://t.me/{SUPPORT_USERNAME}")],
     ])
 
 def back_keyboard():
-    return InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back to Menu", callback_data="menu_back")]])
+    return InlineKeyboardMarkup([[InlineKeyboardButton("🔙  Back to Menu", callback_data="menu_back")]])
 
 
 # ── PTB error handler (logs ALL handler exceptions to console) ────────────────
@@ -228,38 +228,46 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if referred_by:
         try:
             await ctx.bot.send_message(referred_by,
-                f"🎉 *New Referral!*\n\n@{user.username or user.first_name} just joined!\n"
-                f"You'll earn *{int(REFERRAL_COMMISSION*100)}%* on their deposits.",
-                parse_mode="Markdown")
+                f"<b>🎉 New Referral!</b>\n\n"
+                f"<b>@{user.username or user.first_name}</b> just joined using your link!\n"
+                f"You'll earn <b>{int(REFERRAL_COMMISSION*100)}%</b> on their deposits.",
+                parse_mode="HTML")
         except Exception:
             pass
     await update.message.reply_text(
-        f"╔══════════════════════╗\n      🏪 <b>TG MARKET</b>\n╚══════════════════════╝\n\n"
-        f"👋 Welcome, <b>{user.first_name}</b>!\n\n"
-        f"The #1 marketplace to buy Telegram accounts safely using USD.\n\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━\n💡 <b>How it works:</b>\n"
-        f"  {pe(PE_RECHARGE,'💵')} Recharge USD to your wallet\n"
-        f"  {pe(PE_BUY,'🛒')} Browse &amp; buy Telegram accounts\n"
-        f"  {pe(PE_WALLET,'📊')} Receive session instantly after purchase\n"
-        f"  {pe(PE_REFER,'👥')} Refer friends &amp; earn 2% commission\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━\n\nChoose an option below 👇",
+        f"<b>⚡ TG MARKET — Official Bot</b>\n"
+        f"<b>▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰</b>\n\n"
+        f"👋 <b>Welcome, {user.first_name}!</b>\n\n"
+        f"<b>The #1 trusted marketplace</b> to buy &amp; sell\n"
+        f"Telegram accounts securely using <b>USD</b>.\n\n"
+        f"<b>▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰</b>\n"
+        f"<b>💡 How It Works</b>\n\n"
+        f"  <b>💵</b>  Recharge USD to your wallet\n"
+        f"  <b>🛒</b>  Browse &amp; buy Telegram accounts\n"
+        f"  <b>🔑</b>  Receive session instantly after purchase\n"
+        f"  <b>👥</b>  Refer friends &amp; earn <b>2% commission</b>\n\n"
+        f"<b>▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰</b>\n"
+        f"<b>🔒 Secure  •  Fast  •  Trusted</b>\n\n"
+        f"Select an option below 👇",
         parse_mode="HTML", reply_markup=main_menu_keyboard())
 
 async def menu_back(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
+    bal = get_balance(query.from_user.id)
     await query.edit_message_text(
-        f"🏪 <b>TG MARKET</b> — Main Menu\n\n"  
-        f"{pe(PE_WALLET,'�')} Balance: <b>${get_balance(query.from_user.id):.2f}</b>\n\n"
-        f"What would you like to do?\n\n"
-        f"{pe(PE_BUY,'🛒')} Buy Account   {pe(PE_SELL,'💰')} Sell Account\n"
-        f"{pe(PE_RECHARGE,'💵')} Recharge   {pe(PE_WITHDRAW,'💸')} Withdraw\n"
-        f"{pe(PE_WALLET,'📊')} My Wallet   {pe(PE_REFER,'👥')} Refer &amp; Earn\n"
-        f"{pe(PE_SUPPORT,'🆘')} Support",
+        f"<b>⚡ TG MARKET — Main Menu</b>\n"
+        f"<b>▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰</b>\n\n"
+        f"<b>💼 Wallet Balance</b>\n"
+        f"<b>💲 ${bal:.2f} USD</b>\n\n"
+        f"<b>🔒 Secure  •  Fast  •  Trusted</b>\n\n"
+        f"What would you like to do?",
         parse_mode="HTML", reply_markup=main_menu_keyboard())
 
 async def cancel(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("❌ Action cancelled.", reply_markup=main_menu_keyboard())
+    await update.message.reply_text(
+        "❌ <b>Action cancelled.</b>",
+        parse_mode="HTML", reply_markup=main_menu_keyboard())
     return ConversationHandler.END
 
 # ── DEPOSIT ───────────────────────────────────────────────────────────────────
@@ -268,11 +276,12 @@ async def deposit_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     await query.edit_message_text(
-        f"╔══════════════════════╗\n      💵 <b>RECHARGE</b>\n╚══════════════════════╝\n\n"
-        "Enter the amount in USD you want to deposit.\n\n"
-        "📌 <b>Example:</b> <code>50</code>\n\n"
-        "━━━━━━━━━━━━━━━━━━━━━━\n"
-        "✏️ Enter amount or /cancel to go back:",
+        f"<b>💵 RECHARGE WALLET</b>\n"
+        f"<b>▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰</b>\n\n"
+        f"Enter the amount in <b>USD</b> you want to deposit.\n\n"
+        f"📌 <b>Example:</b> <code>50</code>\n\n"
+        f"<b>▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰</b>\n"
+        f"✏️ <b>Type the amount below</b> or /cancel to go back:",
         parse_mode="HTML")
     return DEPOSIT_AMOUNT
 
@@ -286,19 +295,20 @@ async def deposit_amount(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             raise ValueError
     except ValueError:
         await update.message.reply_text(
-            "❌ *Invalid amount.* Enter a positive number like `25`.",
-            parse_mode="Markdown")
+            "<b>❌ Invalid amount.</b> Enter a positive number like <code>25</code>.",
+            parse_mode="HTML")
         return DEPOSIT_AMOUNT
 
     ctx.user_data["dep_amount"] = amount
 
     msg = (
-        f"💵 *Amount to Pay:* `${amount:.2f}`\n\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"📲 *Pay via UPI:*\n`{PAYMENT_UPI}`\n\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"📸 After payment, send the *screenshot* of your payment here.\n\n"
-        f"⚠️ Your deposit will be credited after admin verifies the screenshot."
+        f"<b>💵 Amount to Pay: ${amount:.2f}</b>\n\n"
+        f"<b>▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰</b>\n"
+        f"<b>📲 Pay via UPI:</b>\n"
+        f"<code>{PAYMENT_UPI}</code>\n\n"
+        f"<b>▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰</b>\n"
+        f"📸 After payment, send the <b>screenshot</b> of your payment here.\n\n"
+        f"⚠️ <b>Your deposit will be credited after admin verifies the screenshot.</b>"
     )
 
     if PAYMENT_QR:
@@ -306,16 +316,16 @@ async def deposit_amount(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_photo(
             photo=PAYMENT_QR,
             caption=msg,
-            parse_mode="Markdown")
+            parse_mode="HTML")
     elif os.path.isfile(PAYMENT_QR_PATH):
         # Send QR directly from local image file
         with open(PAYMENT_QR_PATH, "rb") as qr_file:
             await update.message.reply_photo(
                 photo=qr_file,
                 caption=msg,
-                parse_mode="Markdown")
+                parse_mode="HTML")
     else:
-        await update.message.reply_text(msg, parse_mode="Markdown")
+        await update.message.reply_text(msg, parse_mode="HTML")
 
     return DEPOSIT_SCREENSHOT
 
@@ -326,8 +336,8 @@ async def deposit_screenshot(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     if not update.message.photo:
         await update.message.reply_text(
-            "❌ Please send a *screenshot photo* of your payment.",
-            parse_mode="Markdown")
+            "<b>❌ Please send a screenshot photo</b> of your payment.",
+            parse_mode="HTML")
         return DEPOSIT_SCREENSHOT
 
     photo_id = update.message.photo[-1].file_id
@@ -345,13 +355,13 @@ async def deposit_screenshot(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ])
 
     admin_caption = (
-        f"📥 *NEW DEPOSIT REQUEST*\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"👤 User: @{user.username or user.first_name} (`{user.id}`)\n"
-        f"💵 Amount: *${amount:.2f}*\n"
-        f"🆔 Deposit ID: `{dep_id}`\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"📸 Payment screenshot attached."
+        f"<b>📥 NEW DEPOSIT REQUEST</b>\n"
+        f"<b>▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰</b>\n"
+        f"<b>👤 User:</b> @{user.username or user.first_name} (<code>{user.id}</code>)\n"
+        f"<b>💵 Amount: ${amount:.2f}</b>\n"
+        f"<b>🆔 Deposit ID:</b> <code>{dep_id}</code>\n"
+        f"<b>▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰</b>\n"
+        f"📸 <b>Payment screenshot attached.</b>"
     )
 
     # Send screenshot + buttons to admin only
@@ -359,7 +369,7 @@ async def deposit_screenshot(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         ADMIN_ID,
         photo=photo_id,
         caption=admin_caption,
-        parse_mode="Markdown",
+        parse_mode="HTML",
         reply_markup=admin_kb)
 
     # Channel gets NO screenshot — just basic info
@@ -373,11 +383,11 @@ async def deposit_screenshot(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     )
 
     await update.message.reply_text(
-        f"✅ *Screenshot received!*\n\n"
-        f"💵 Amount: *${amount:.2f}*\n"
-        f"🆔 Reference ID: `{dep_id}`\n\n"
-        f"⏳ Admin will verify your payment and credit your balance shortly.",
-        parse_mode="Markdown",
+        f"<b>✅ Screenshot Received!</b>\n\n"
+        f"<b>💵 Amount: ${amount:.2f}</b>\n"
+        f"<b>🆔 Reference ID:</b> <code>{dep_id}</code>\n\n"
+        f"⏳ <b>Admin will verify your payment and credit your balance shortly.</b>",
+        parse_mode="HTML",
         reply_markup=main_menu_keyboard())
     return ConversationHandler.END
 
@@ -404,11 +414,14 @@ async def dep_approve_cb(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             conn.execute("INSERT INTO referral_earnings (referrer_id,referred_id,deposit_id,commission) VALUES (%s,%s,%s,%s)",
                 (referrer["referred_by"], dep["user_id"], dep_id, commission))
     await query.edit_message_caption(
-        caption=f"✅ *Deposit #{dep_id} APPROVED*\n💵 ${dep['amount']:.2f} credited to `{dep['user_id']}`",
-        parse_mode="Markdown")
+        caption=f"<b>✅ Deposit #{dep_id} — APPROVED</b>\n<b>💵 ${dep['amount']:.2f}</b> credited to <code>{dep['user_id']}</code>",
+        parse_mode="HTML")
     await ctx.bot.send_message(dep["user_id"],
-        f"🎉 *Deposit Approved!*\n\n💵 *${dep['amount']:.2f}* added to your wallet.\n🆔 Ref: `{dep_id}`\n\nStart shopping! 🛒",
-        parse_mode="Markdown", reply_markup=main_menu_keyboard())
+        f"<b>🎉 Deposit Approved!</b>\n\n"
+        f"<b>💵 ${dep['amount']:.2f}</b> has been added to your wallet.\n"
+        f"<b>🆔 Ref:</b> <code>{dep_id}</code>\n\n"
+        f"<b>Start shopping now! 🛒</b>",
+        parse_mode="HTML", reply_markup=main_menu_keyboard())
     await send_to_channel(ctx.bot, FUNDS_CHANNEL,
         f"✅ <b>DEPOSIT APPROVED</b>\n"
         f"━━━━━━━━━━━━━━━━━━━━━━\n"
@@ -420,7 +433,7 @@ async def dep_approve_cb(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if referrer and referrer["referred_by"] and commission > 0:
         try:
             await ctx.bot.send_message(referrer["referred_by"],
-                f"💰 *Referral Commission!*\nYou earned *${commission:.2f}*!", parse_mode="Markdown")
+                f"<b>💰 Referral Commission Earned!</b>\n\nYou earned <b>${commission:.2f}</b>!", parse_mode="HTML")
         except Exception:
             pass
     await query.answer("✅ Approved!")
@@ -437,11 +450,13 @@ async def dep_reject_cb(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             await query.answer("Not found or already processed.", show_alert=True); return
         conn.execute("UPDATE deposits SET status='rejected' WHERE id=%s", (dep_id,))
     await query.edit_message_caption(
-        caption=f"❌ *Deposit #{dep_id} REJECTED*",
-        parse_mode="Markdown")
+        caption=f"<b>❌ Deposit #{dep_id} — REJECTED</b>",
+        parse_mode="HTML")
     await ctx.bot.send_message(dep["user_id"],
-        f"❌ *Deposit Rejected*\n\nYour deposit of *${dep['amount']:.2f}* (ID: `{dep_id}`) was not approved.\nContact 🆘 Support if this is an error.",
-        parse_mode="Markdown", reply_markup=main_menu_keyboard())
+        f"<b>❌ Deposit Rejected</b>\n\n"
+        f"Your deposit of <b>${dep['amount']:.2f}</b> (ID: <code>{dep_id}</code>) was not approved.\n"
+        f"Contact <b>🆘 Support</b> if this is an error.",
+        parse_mode="HTML", reply_markup=main_menu_keyboard())
     await send_to_channel(ctx.bot, FUNDS_CHANNEL,
         f"❌ <b>DEPOSIT REJECTED</b>\n"
         f"━━━━━━━━━━━━━━━━━━━━━━\n"
@@ -475,15 +490,18 @@ async def admin_approve(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             conn.execute("INSERT INTO referral_earnings (referrer_id,referred_id,deposit_id,commission) VALUES (%s,%s,%s,%s)",
                 (referrer["referred_by"], dep["user_id"], dep_id, commission))
     await update.message.reply_text(
-        f"✅ Deposit #{dep_id} approved! *${dep['amount']:.2f}* credited."
-        + (f"\n🤝 Referral *${commission:.2f}* paid." if commission else ""), parse_mode="Markdown")
+        f"✅ Deposit #{dep_id} approved! <b>${dep['amount']:.2f}</b> credited."
+        + (f"\n🤝 Referral <b>${commission:.2f}</b> paid." if commission else ""), parse_mode="HTML")
     await ctx.bot.send_message(dep["user_id"],
-        f"🎉 *Deposit Approved!*\n\n💵 *${dep['amount']:.2f}* added to your wallet.\n🆔 Ref: `{dep_id}`\n\nStart shopping! 🛒",
-        parse_mode="Markdown", reply_markup=main_menu_keyboard())
+        f"<b>🎉 Deposit Approved!</b>\n\n"
+        f"<b>💵 ${dep['amount']:.2f}</b> added to your wallet.\n"
+        f"<b>🆔 Ref:</b> <code>{dep_id}</code>\n\n"
+        f"<b>Start shopping! 🛒</b>",
+        parse_mode="HTML", reply_markup=main_menu_keyboard())
     if referrer and referrer["referred_by"] and commission > 0:
         try:
             await ctx.bot.send_message(referrer["referred_by"],
-                f"💰 *Referral Commission!*\nYou earned *${commission:.2f}*!", parse_mode="Markdown")
+                f"<b>💰 Referral Commission Earned!</b>\nYou earned <b>${commission:.2f}</b>!", parse_mode="HTML")
         except Exception:
             pass
 
@@ -502,8 +520,10 @@ async def admin_reject(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         conn.execute("UPDATE deposits SET status='rejected' WHERE id=%s", (dep_id,))
     await update.message.reply_text(f"❌ Deposit #{dep_id} rejected.")
     await ctx.bot.send_message(dep["user_id"],
-        f"❌ *Deposit Rejected*\n\nYour deposit of *${dep['amount']:.2f}* (ID: `{dep_id}`) was not approved.\nContact 🆘 Support if this is an error.",
-        parse_mode="Markdown", reply_markup=main_menu_keyboard())
+        f"<b>❌ Deposit Rejected</b>\n\n"
+        f"Your deposit of <b>${dep['amount']:.2f}</b> (ID: <code>{dep_id}</code>) was not approved.\n"
+        f"Contact <b>🆘 Support</b> if this is an error.",
+        parse_mode="HTML", reply_markup=main_menu_keyboard())
 
 # ── Admin: credit / deduct ────────────────────────────────────────────────────
 async def admin_credit(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -516,17 +536,17 @@ async def admin_credit(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if amount <= 0:
             raise ValueError
     except (IndexError, ValueError):
-        await update.message.reply_text("Usage: `/credit <user_id> <amount>`\nExample: `/credit 123456789 50`", parse_mode="Markdown")
+        await update.message.reply_text("Usage: <code>/credit &lt;user_id&gt; &lt;amount&gt;</code>\nExample: <code>/credit 123456789 50</code>", parse_mode="HTML")
         return
     ensure_user(user_id, "")
     with get_db() as conn:
         conn.execute("UPDATE users SET balance=balance+%s WHERE user_id=%s", (amount, user_id))
         new_bal = float(conn.execute("SELECT balance FROM users WHERE user_id=%s", (user_id,)).fetchone()["balance"])
-    await update.message.reply_text(f"✅ *${amount:.2f} credited to `{user_id}`*\nNew balance: *${new_bal:.2f}*", parse_mode="Markdown")
+    await update.message.reply_text(f"✅ <b>${amount:.2f} credited to <code>{user_id}</code></b>\nNew balance: <b>${new_bal:.2f}</b>", parse_mode="HTML")
     try:
         await ctx.bot.send_message(user_id,
-            f"🎉 *${amount:.2f} added to your balance by admin!*\n\nNew balance: *${new_bal:.2f}*\n\nStart shopping! 🛒",
-            parse_mode="Markdown", reply_markup=main_menu_keyboard())
+            f"<b>🎉 ${amount:.2f} added to your balance by admin!</b>\n\nNew balance: <b>${new_bal:.2f}</b>\n\n<b>Start shopping! 🛒</b>",
+            parse_mode="HTML", reply_markup=main_menu_keyboard())
     except Exception:
         await update.message.reply_text("⚠️ Credited but could not notify user.")
 
@@ -540,7 +560,7 @@ async def admin_deduct(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if amount <= 0:
             raise ValueError
     except (IndexError, ValueError):
-        await update.message.reply_text("Usage: `/deduct <user_id> <amount>`", parse_mode="Markdown")
+        await update.message.reply_text("Usage: <code>/deduct &lt;user_id&gt; &lt;amount&gt;</code>", parse_mode="HTML")
         return
     with get_db() as conn:
         bal = conn.execute("SELECT balance FROM users WHERE user_id=%s", (user_id,)).fetchone()
@@ -548,7 +568,7 @@ async def admin_deduct(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ User not found or insufficient balance."); return
         conn.execute("UPDATE users SET balance=balance-%s WHERE user_id=%s", (amount, user_id))
         new_bal = float(conn.execute("SELECT balance FROM users WHERE user_id=%s", (user_id,)).fetchone()["balance"])
-    await update.message.reply_text(f"✅ *${amount:.2f} deducted from `{user_id}`*\nNew balance: *${new_bal:.2f}*", parse_mode="Markdown")
+    await update.message.reply_text(f"✅ <b>${amount:.2f} deducted from <code>{user_id}</code></b>\nNew balance: <b>${new_bal:.2f}</b>", parse_mode="HTML")
 
 
 # ── Admin: login via OTP ──────────────────────────────────────────────────────
@@ -557,9 +577,12 @@ async def admin_login(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Not authorised.")
         return ConversationHandler.END
     await update.message.reply_text(
-        "╔══════════════════════╗\n    📱 *LOGIN ACCOUNT*\n╚══════════════════════╝\n\n"
-        "Send the phone number with country code.\n\n📌 Example: `+12345678900`\n\n/cancel to abort.",
-        parse_mode="Markdown")
+        "<b>📱 LOGIN ACCOUNT</b>\n"
+        "<b>▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰</b>\n\n"
+        "Send the phone number with country code.\n\n"
+        "<b>📌 Example:</b> <code>+12345678900</code>\n\n"
+        "/cancel to abort.",
+        parse_mode="HTML")
     return ADMIN_PHONE
 
 async def get_phone(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -568,8 +591,8 @@ async def get_phone(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("⏳ Sending OTP...")
     if not API_ID or not API_HASH:
         await update.message.reply_text(
-            "❌ *Configuration Error*\n\n`API_ID` or `API_HASH` not set in Render env vars.",
-            parse_mode="Markdown")
+            "<b>❌ Configuration Error</b>\n\n<code>API_ID</code> or <code>API_HASH</code> not set in Render env vars.",
+            parse_mode="HTML")
         return ConversationHandler.END
     try:
         from telethon import TelegramClient
@@ -580,16 +603,16 @@ async def get_phone(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         ctx.user_data["client"] = client
         ctx.user_data["phone_code_hash"] = result.phone_code_hash
         await update.message.reply_text(
-            "📩 *OTP sent!*\n\nEnter the OTP you received _(digits only, e.g. `12345`)_:",
-            parse_mode="Markdown")
+            "<b>📩 OTP sent!</b>\n\nEnter the OTP you received <i>(digits only, e.g. <code>12345</code>)</i>:",
+            parse_mode="HTML")
         return ADMIN_OTP
     except Exception as e:
         logger.error(f"OTP error: {traceback.format_exc()}")
         await update.message.reply_text(
-            f"❌ *Failed to send OTP*\n\n`{type(e).__name__}: {e}`\n\n"
-            f"• API\\_ID set: `{'Yes' if API_ID else 'No'}`\n"
-            f"• API\\_HASH set: `{'Yes' if API_HASH else 'No'}`",
-            parse_mode="Markdown")
+            f"<b>❌ Failed to send OTP</b>\n\n<code>{type(e).__name__}: {e}</code>\n\n"
+            f"• <b>API_ID set:</b> <code>{'Yes' if API_ID else 'No'}</code>\n"
+            f"• <b>API_HASH set:</b> <code>{'Yes' if API_HASH else 'No'}</code>",
+            parse_mode="HTML")
         return ConversationHandler.END
 
 async def get_otp(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -607,11 +630,11 @@ async def get_otp(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await client.disconnect()
         ctx.user_data["session"] = session_string
         await update.message.reply_text(
-            "✅ *Login successful!*\n\n💵 Now enter the price for this account (e.g. `25`):",
-            parse_mode="Markdown")
+            "<b>✅ Login successful!</b>\n\n<b>💵 Now enter the price</b> for this account (e.g. <code>25</code>):",
+            parse_mode="HTML")
         return ADMIN_ADD_PRICE
     except Exception as e:
-        await update.message.reply_text(f"❌ *Login failed*\n\n`{e}`\n\nRun /login\\_account to try again.", parse_mode="Markdown")
+        await update.message.reply_text(f"<b>❌ Login failed</b>\n\n<code>{e}</code>\n\nRun /login_account to try again.", parse_mode="HTML")
         return ConversationHandler.END
 
 async def set_price(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -628,8 +651,8 @@ async def set_price(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             (ctx.user_data["session"], ctx.user_data.get("phone", ""), price)
         ).fetchone()["id"]
     await update.message.reply_text(
-        f"🎉 *Account #{acc_id} Added!*\n\n💵 Price: *${price:.2f}*\n🟢 Now visible in the marketplace.",
-        parse_mode="Markdown")
+        f"<b>🎉 Account #{acc_id} Added!</b>\n\n<b>💵 Price: ${price:.2f}</b>\n🟢 <b>Now visible in the marketplace.</b>",
+        parse_mode="HTML")
     # Post to trades channel
     phone_raw = ctx.user_data.get("phone", "")
     flag, country_name = phone_to_country(phone_raw)
@@ -656,21 +679,21 @@ async def admin_accounts(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not rows:
         await update.message.reply_text("📦 No accounts yet."); return
     icons = {"available": "🟢", "sold": "✅", "pending_review": "🔄"}
-    lines = [f"📦 *All Accounts* ({len(rows)})\n━━━━━━━━━━━━━━━━━━━━━━"]
+    lines = [f"<b>📦 All Accounts ({len(rows)})</b>\n<b>▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰</b>"]
     for r in rows:
-        lines.append(f"{icons.get(r['status'],'⚪')} #{r['id']} — *${r['price']:.2f}* ({r['status']})"
-            + (f" → `{r['buyer_id']}`" if r["buyer_id"] else ""))
-    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+        lines.append(f"{icons.get(r['status'],'⚪')} <b>#{r['id']}</b> — <b>${r['price']:.2f}</b> ({r['status']})"
+            + (f" → <code>{r['buyer_id']}</code>" if r["buyer_id"] else ""))
+    await update.message.reply_text("\n".join(lines), parse_mode="HTML")
 
 async def admin_users(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return
     with get_db() as conn:
         users = conn.execute("SELECT * FROM users ORDER BY created_at DESC").fetchall()
-    lines = [f"👥 *All Users* ({len(users)})\n━━━━━━━━━━━━━━━━━━━━━━"]
+    lines = [f"<b>👥 All Users ({len(users)})</b>\n<b>▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰</b>"]
     for u in users:
-        lines.append(f"• @{u['username'] or 'N/A'} (`{u['user_id']}`) — *${u['balance']:.2f}*")
-    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+        lines.append(f"• @{u['username'] or 'N/A'} (<code>{u['user_id']}</code>) — <b>${u['balance']:.2f}</b>")
+    await update.message.reply_text("\n".join(lines), parse_mode="HTML")
 
 async def admin_pending(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
@@ -681,11 +704,11 @@ async def admin_pending(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         ).fetchall()
     if not deps:
         await update.message.reply_text("✅ No pending deposits."); return
-    lines = [f"📥 *Pending Deposits* ({len(deps)})\n━━━━━━━━━━━━━━━━━━━━━━"]
+    lines = [f"<b>📥 Pending Deposits ({len(deps)})</b>\n<b>▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰</b>"]
     for d in deps:
-        lines.append(f"🆔 `{d['id']}` — @{d['username'] or d['user_id']} — *${d['amount']:.2f}*\n"
+        lines.append(f"<b>🆔</b> <code>{d['id']}</code> — @{d['username'] or d['user_id']} — <b>${d['amount']:.2f}</b>\n"
             f"   ✅ /approve_{d['id']}   ❌ /reject_{d['id']}")
-    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+    await update.message.reply_text("\n".join(lines), parse_mode="HTML")
 
 async def admin_delete(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
@@ -799,26 +822,26 @@ async def _watch_for_otp(bot, user_id: int, session_str: str, phone: str, acc_id
         if otp_code:
             await bot.send_message(
                 user_id,
-                f"🔐 *Your OTP has arrived!*\n\n"
-                f"━━━━━━━━━━━━━━━━━━━━━━\n"
-                f"📱 Phone: `{phone}`\n"
-                f"🔑 OTP Code: `{otp_code}`\n"
-                f"━━━━━━━━━━━━━━━━━━━━━━\n"
-                f"⚠️ Enter this code in Telegram now.\n"
-                f"⚠️ OTP expires in a few minutes.\n"
-                f"⚠️ Do *not* share these details.",
-                parse_mode="Markdown"
+                f"<b>🔐 Your OTP Has Arrived!</b>\n\n"
+                f"<b>▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰</b>\n"
+                f"<b>📱 Phone:</b> <code>{phone}</code>\n"
+                f"<b>🔑 OTP Code:</b> <code>{otp_code}</code>\n"
+                f"<b>▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰</b>\n"
+                f"⚠️ <b>Enter this code in Telegram now.</b>\n"
+                f"⚠️ <b>OTP expires in a few minutes.</b>\n"
+                f"⚠️ <b>Do NOT share these details with anyone.</b>",
+                parse_mode="HTML"
             )
         else:
             await bot.send_message(
                 user_id,
-                f"⏰ *OTP not detected automatically.*\n\n"
+                f"<b>⏰ OTP Not Detected Automatically</b>\n\n"
                 f"Telegram may have sent the code via SMS instead.\n\n"
-                f"📱 Phone: `{phone}`\n\n"
+                f"<b>📱 Phone:</b> <code>{phone}</code>\n\n"
                 f"Please check your SMS or contact support.",
-                parse_mode="Markdown",
+                parse_mode="HTML",
                 reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("🆘 Support", url=f"https://t.me/{SUPPORT_USERNAME}")]
+                    [InlineKeyboardButton("🆘  Support", url=f"https://t.me/{SUPPORT_USERNAME}")]
                 ])
             )
 
@@ -826,12 +849,12 @@ async def _watch_for_otp(bot, user_id: int, session_str: str, phone: str, acc_id
         logger.error(f"[OTP watcher #{acc_id}] fatal: {e}\n{traceback.format_exc()}")
         await bot.send_message(
             user_id,
-            f"⚠️ *OTP auto-detection failed.*\n\n"
-            f"📱 Phone: `{phone}`\n\n"
+            f"<b>⚠️ OTP Auto-Detection Failed</b>\n\n"
+            f"<b>📱 Phone:</b> <code>{phone}</code>\n\n"
             f"Please request the OTP manually and contact support if needed.",
-            parse_mode="Markdown",
+            parse_mode="HTML",
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("🆘 Support", url=f"https://t.me/{SUPPORT_USERNAME}")]
+                [InlineKeyboardButton("🆘  Support", url=f"https://t.me/{SUPPORT_USERNAME}")]
             ])
         )
 
@@ -854,9 +877,10 @@ async def buy_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     if not accounts:
         await query.edit_message_text(
-            "╔══════════════════════╗\n     🛒 *MARKETPLACE*\n╚══════════════════════╝\n\n"
-            "😔 No accounts available right now.\nCheck back soon!",
-            parse_mode="Markdown", reply_markup=back_keyboard())
+            "<b>🛒 MARKETPLACE</b>\n"
+            "<b>▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰</b>\n\n"
+            "<b>😔 No accounts available right now.</b>\nCheck back soon!",
+            parse_mode="HTML", reply_markup=back_keyboard())
         return
 
     # Group accounts by country using dial code matching
@@ -886,10 +910,11 @@ async def buy_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     total = sum(v["count"] for v in country_counts.values())
     await query.edit_message_text(
-        f"╔══════════════════════╗\n     🛒 *MARKETPLACE*\n╚══════════════════════╝\n\n"
-        f"📦 *{total} account(s) available*\n\n"
+        f"<b>🛒 MARKETPLACE</b>\n"
+        f"<b>▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰</b>\n\n"
+        f"<b>📦 {total} account(s) available</b>\n\n"
         f"Select a country to browse accounts:",
-        parse_mode="Markdown",
+        parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup(buttons))
 
 
@@ -937,11 +962,12 @@ async def buy_country(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     buttons.append([InlineKeyboardButton("🔙 Back", callback_data="menu_buy")])
 
     await query.edit_message_text(
-        f"╔══════════════════════╗\n     🛒 *MARKETPLACE*\n╚══════════════════════╝\n\n"
-        f"{flag} *{name}* accounts\n"
-        f"📦 *{len(accs)} available*\n\n"
+        f"<b>🛒 MARKETPLACE</b>\n"
+        f"<b>▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰</b>\n\n"
+        f"{flag} <b>{name}</b> accounts\n"
+        f"<b>📦 {len(accs)} available</b>\n\n"
         f"Tap any account to view details:",
-        parse_mode="Markdown",
+        parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup(buttons))
 
 async def view_account(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -958,15 +984,18 @@ async def view_account(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     balance = get_balance(user_id)
     has_funds = balance >= float(acc["price"])
     await query.edit_message_text(
-        f"╔══════════════════════╗\n    🔑 *ACCOUNT DETAILS*\n╚══════════════════════╝\n\n"
-        f"🆔 Account ID:  *#{acc['id']}*\n💵 Price:       *${acc['price']:.2f}*\n\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━\n💼 Your Balance: *${balance:.2f}*\n"
-        f"{'✅ You have enough funds.' if has_funds else '❌ Insufficient balance — deposit first.'}\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━",
-        parse_mode="Markdown",
+        f"<b>🔑 ACCOUNT DETAILS</b>\n"
+        f"<b>▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰</b>\n\n"
+        f"<b>🆔 Account ID:  #{acc['id']}</b>\n"
+        f"<b>💵 Price:       ${acc['price']:.2f}</b>\n\n"
+        f"<b>▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰</b>\n"
+        f"<b>💼 Your Balance: ${balance:.2f}</b>\n"
+        f"{'<b>✅ You have enough funds.</b>' if has_funds else '<b>❌ Insufficient balance — deposit first.</b>'}\n"
+        f"<b>▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰</b>",
+        parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("✅ Buy Now", callback_data=f"confirm_{acc_id}")],
-            [InlineKeyboardButton("🔙 Back",    callback_data="menu_buy")]]))
+            [InlineKeyboardButton("✅  Buy Now", callback_data=f"confirm_{acc_id}")],
+            [InlineKeyboardButton("🔙  Back",    callback_data="menu_buy")]]))
 
 async def confirm_buy(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -985,13 +1014,13 @@ async def confirm_buy(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         balance = get_balance(user_id)
         if balance < float(acc["price"]):
             await query.edit_message_text(
-                f"❌ *Insufficient Balance*\n\n"
-                f"💼 Your balance: *${balance:.2f}*\n"
-                f"💵 Required:     *${acc['price']:.2f}*",
-                parse_mode="Markdown",
+                f"<b>❌ Insufficient Balance</b>\n\n"
+                f"<b>💼 Your balance: ${balance:.2f}</b>\n"
+                f"<b>💵 Required:     ${acc['price']:.2f}</b>",
+                parse_mode="HTML",
                 reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("💰 Deposit Now", callback_data="menu_deposit")],
-                    [InlineKeyboardButton("🔙 Back",        callback_data="menu_back")]
+                    [InlineKeyboardButton("💰  Deposit Now", callback_data="menu_deposit")],
+                    [InlineKeyboardButton("🔙  Back",        callback_data="menu_back")]
                 ])
             )
             return
@@ -1005,13 +1034,13 @@ async def confirm_buy(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
 
     await query.edit_message_text(
-        f"🎉 *Purchase Successful!*\n\n"
-        f"🔑 Account *#{acc_id}* is yours!\n"
-        f"💵 Paid: *${acc['price']:.2f}*\n\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"⏳ Sending login details...\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━",
-        parse_mode="Markdown",
+        f"<b>🎉 Purchase Successful!</b>\n\n"
+        f"<b>🔑 Account #{acc_id} is yours!</b>\n"
+        f"<b>💵 Paid: ${acc['price']:.2f}</b>\n\n"
+        f"<b>▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰</b>\n"
+        f"⏳ <b>Sending login details...</b>\n"
+        f"<b>▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰</b>",
+        parse_mode="HTML",
         reply_markup=main_menu_keyboard()
     )
 
@@ -1020,17 +1049,17 @@ async def confirm_buy(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     # ── Send phone number to buyer immediately ────────────────────────────────
     await ctx.bot.send_message(
         user_id,
-        f"📱 *Your Account Phone Number:*\n\n"
-        f"`{phone}`\n\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"*How to login:*\n"
-        f"1️⃣ Open Telegram on any device\n"
-        f"2️⃣ Enter the phone number above\n"
-        f"3️⃣ Telegram will send an OTP to this account\n"
-        f"4️⃣ I will automatically forward the OTP to you here ⬇️\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"⏳ *Waiting for OTP... (up to 5 minutes)*",
-        parse_mode="Markdown"
+        f"<b>📱 Your Account Phone Number</b>\n\n"
+        f"<code>{phone}</code>\n\n"
+        f"<b>▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰</b>\n"
+        f"<b>How to login:</b>\n"
+        f"<b>1️⃣</b>  Open Telegram on any device\n"
+        f"<b>2️⃣</b>  Enter the phone number above\n"
+        f"<b>3️⃣</b>  Telegram will send an OTP to this account\n"
+        f"<b>4️⃣</b>  I will automatically forward the OTP to you here ⬇️\n"
+        f"<b>▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰</b>\n"
+        f"⏳ <b>Waiting for OTP... (up to 5 minutes)</b>",
+        parse_mode="HTML"
     )
 
     # ── Launch OTP watcher as a background task on the shared event loop ─────
@@ -1053,10 +1082,10 @@ async def confirm_buy(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     # Notify admin
     await ctx.bot.send_message(
         ADMIN_ID,
-        f"💸 *Account Sold*\n\n"
-        f"🔑 Account *#{acc_id}* sold to `{user_id}` for *${acc['price']:.2f}*.\n"
-        f"📱 Phone: `{phone}`",
-        parse_mode="Markdown"
+        f"<b>💸 Account Sold</b>\n\n"
+        f"<b>🔑 Account #{acc_id}</b> sold to <code>{user_id}</code> for <b>${acc['price']:.2f}</b>.\n"
+        f"<b>📱 Phone:</b> <code>{phone}</code>",
+        parse_mode="HTML"
     )
     # Post to trades channel
     buyer = await ctx.bot.get_chat(user_id)
@@ -1095,17 +1124,17 @@ async def cmd_prices(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             "No prices available yet. Check back soon!",
             reply_markup=main_menu_keyboard())
         return
-    lines = ["<b>We buy from you:</b>\n"]
+    lines = ["<b>💰 We Buy From You — Price List</b>\n<b>▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰</b>\n"]
     for r in rows:
         flag = country_flag(r["country_code"])
         lines.append(
-            f"[{flag}]+{r['dial_code']}-{r['country_code']}: {r['price']}$"
+            f"<b>{flag} +{r['dial_code']}-{r['country_code']}:</b>  <b>{r['price']}$</b>  <i>({r['country_name']})</i>"
         )
     await update.message.reply_text(
         "\n".join(lines),
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("💰 Sell Account", callback_data="menu_sell")]
+            [InlineKeyboardButton("💰  Sell Account", callback_data="menu_sell")]
         ])
     )
 
@@ -1366,13 +1395,15 @@ async def sell_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     await query.edit_message_text(
-        "📱 Send your phone number with country code.\n\n"
-        "Example: <code>+919876543210</code>\n\n"
+        "<b>💰 SELL ACCOUNT</b>\n"
+        "<b>▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰</b>\n\n"
+        "📱 <b>Send your phone number</b> with country code.\n\n"
+        "<b>Example:</b> <code>+919876543210</code>\n\n"
         "Check /prices to see payouts per country.\n\n"
         "Type /cancel to go back.",
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("🔙 Back to Menu", callback_data="menu_back")]
+            [InlineKeyboardButton("🔙  Back to Menu", callback_data="menu_back")]
         ])
     )
     return SELL_PHONE
@@ -1399,10 +1430,10 @@ async def sell_get_phone(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         ctx.user_data["sell_client"] = client
         ctx.user_data["sell_phone_code_hash"] = result.phone_code_hash
         await update.message.reply_text(
-            f"📩 <b>OTP Sent!</b>\n\n"
+            f"<b>📩 OTP Sent!</b>\n\n"
             f"A login code was sent to <code>{phone}</code>.\n\n"
             f"Enter the OTP with spaces between each digit.\n\n"
-            f"Example: <code>1 2 3 4 5</code>",
+            f"<b>Example:</b> <code>1 2 3 4 5</code>",
             parse_mode="HTML")
         return SELL_OTP
     except Exception as e:
@@ -1454,13 +1485,13 @@ async def sell_get_otp(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         ])
         await update.message.bot.send_message(
             ADMIN_ID,
-            f"📥 <b>NEW ACCOUNT FOR SALE</b>\n"
-            f"━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"🆔 Account ID: <code>#{acc_id}</code>\n"
-            f"👤 Seller: {seller_name} (<code>{user.id}</code>)\n"
-            f"📱 Phone: <code>{phone}</code>\n"
-            f"🌍 Country: {flag} {country_name}\n"
-            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"<b>📥 NEW ACCOUNT FOR SALE</b>\n"
+            f"<b>▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰</b>\n"
+            f"<b>🆔 Account ID:</b> <code>#{acc_id}</code>\n"
+            f"<b>👤 Seller:</b> {seller_name} (<code>{user.id}</code>)\n"
+            f"<b>📱 Phone:</b> <code>{phone}</code>\n"
+            f"<b>🌍 Country:</b> {flag} {country_name}\n"
+            f"<b>▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰</b>\n"
             f"Approve to list it in the marketplace, or Reject to remove it.",
             parse_mode="HTML",
             reply_markup=admin_kb
@@ -1479,12 +1510,12 @@ async def sell_get_otp(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
 
         await update.message.reply_text(
-            f"✅ <b>Account Submitted!</b>\n\n"
-            f"📱 Phone: <code>{phone}</code>\n"
-            f"🌍 Country: {flag} {country_name}\n\n"
-            f"━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"Your account is pending admin review.\n"
-            f"You'll be notified once it's approved and listed. 💰",
+            f"<b>✅ Account Submitted!</b>\n\n"
+            f"<b>📱 Phone:</b> <code>{phone}</code>\n"
+            f"<b>🌍 Country:</b> {flag} {country_name}\n\n"
+            f"<b>▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰</b>\n"
+            f"Your account is <b>pending admin review</b>.\n"
+            f"You'll be notified once it's approved and listed. <b>💰</b>",
             parse_mode="HTML",
             reply_markup=main_menu_keyboard())
         return ConversationHandler.END
@@ -1617,16 +1648,19 @@ async def show_balance(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     user = query.from_user
     ensure_user(user.id, user.username or "")
     await query.edit_message_text(
-        f"╔══════════════════════╗\n      📊 *MY WALLET*\n╚══════════════════════╝\n\n"
-        f"💼 *Available Balance*\n   *${get_balance(user.id):.2f} USD*\n\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"👥 Referrals:       *{get_referral_count(user.id)}*\n"
-        f"🤝 Referral Earned: *${get_referral_earnings(user.id):.2f}*\n━━━━━━━━━━━━━━━━━━━━━━",
-        parse_mode="Markdown",
+        f"<b>📊 MY WALLET</b>\n"
+        f"<b>▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰</b>\n\n"
+        f"<b>💼 Available Balance</b>\n"
+        f"<b>💲 ${get_balance(user.id):.2f} USD</b>\n\n"
+        f"<b>▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰</b>\n"
+        f"<b>👥 Referrals:</b>       <b>{get_referral_count(user.id)}</b>\n"
+        f"<b>🤝 Referral Earned:</b> <b>${get_referral_earnings(user.id):.2f}</b>\n"
+        f"<b>▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰</b>",
+        parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("💰 Deposit",  callback_data="menu_deposit"),
-             InlineKeyboardButton("💸 Withdraw", callback_data="menu_withdraw")],
-            [InlineKeyboardButton("🔙 Back to Menu", callback_data="menu_back")]]))
+            [InlineKeyboardButton("💰  Deposit",  callback_data="menu_deposit"),
+             InlineKeyboardButton("💸  Withdraw", callback_data="menu_withdraw")],
+            [InlineKeyboardButton("🔙  Back to Menu", callback_data="menu_back")]]))
 
 async def refer_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -1634,14 +1668,17 @@ async def refer_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     user = query.from_user
     ref_link = f"https://t.me/{ctx.bot.username}?start=ref_{user.id}"
     await query.edit_message_text(
-        f"╔══════════════════════╗\n     👥 *REFER & EARN*\n╚══════════════════════╝\n\n"
-        f"Invite friends and earn *{int(REFERRAL_COMMISSION*100)}% commission*\non every deposit — forever!\n\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━\n📊 *Your Stats*\n"
-        f"👥 Total Referrals: *{get_referral_count(user.id)}*\n"
-        f"💰 Total Earned:    *${get_referral_earnings(user.id):.2f}*\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━\n\n🔗 *Your Referral Link:*\n`{ref_link}`\n\n"
-        f"📤 Share this link. When they deposit, you get 2% instantly!",
-        parse_mode="Markdown", reply_markup=back_keyboard())
+        f"<b>👥 REFER &amp; EARN</b>\n"
+        f"<b>▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰</b>\n\n"
+        f"Invite friends and earn <b>{int(REFERRAL_COMMISSION*100)}% commission</b>\non every deposit — <b>forever!</b>\n\n"
+        f"<b>▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰</b>\n"
+        f"<b>📊 Your Stats</b>\n"
+        f"<b>👥 Total Referrals:</b> <b>{get_referral_count(user.id)}</b>\n"
+        f"<b>💰 Total Earned:</b>    <b>${get_referral_earnings(user.id):.2f}</b>\n"
+        f"<b>▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰</b>\n\n"
+        f"<b>🔗 Your Referral Link:</b>\n<code>{ref_link}</code>\n\n"
+        f"📤 <b>Share this link. When they deposit, you get 2% instantly!</b>",
+        parse_mode="HTML", reply_markup=back_keyboard())
 
 async def withdraw_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Step 1 — Ask for UPI ID or QR code."""
@@ -1649,16 +1686,17 @@ async def withdraw_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     balance = get_balance(query.from_user.id)
     await query.edit_message_text(
-        f"╔══════════════════════╗\n      💸 *WITHDRAW*\n╚══════════════════════╝\n\n"
-        f"💰 Your Balance: *${balance:.2f}*\n\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"📲 *Step 1 of 2*\n\n"
-        f"Send your *UPI ID* or a *QR code photo* to receive payment.\n\n"
-        f"📌 UPI example: `yourname@upi`\n"
+        f"<b>💸 WITHDRAW</b>\n"
+        f"<b>▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰</b>\n\n"
+        f"<b>💰 Your Balance: ${balance:.2f}</b>\n\n"
+        f"<b>▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰</b>\n"
+        f"<b>📲 Step 1 of 2</b>\n\n"
+        f"Send your <b>UPI ID</b> or a <b>QR code photo</b> to receive payment.\n\n"
+        f"📌 <b>UPI example:</b> <code>yourname@upi</code>\n"
         f"📌 Or send a QR code image\n\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"<b>▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰</b>\n"
         f"Type /cancel to go back.",
-        parse_mode="Markdown")
+        parse_mode="HTML")
     return WITHDRAW_UPI
 
 async def withdraw_upi(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -1679,21 +1717,21 @@ async def withdraw_upi(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         upi_display = f"`{upi_text}`"
     else:
         await update.message.reply_text(
-            "❌ Please send your UPI ID as text or a QR code as a photo.",
-            parse_mode="Markdown")
+            "<b>❌ Please send your UPI ID as text or a QR code as a photo.</b>",
+            parse_mode="HTML")
         return WITHDRAW_UPI
 
     balance = get_balance(user.id)
     await update.message.reply_text(
-        f"✅ Payment details received: {upi_display}\n\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"💰 *Step 2 of 2*\n\n"
-        f"Your current balance: *${balance:.2f}*\n\n"
+        f"<b>✅ Payment details received:</b> {upi_display}\n\n"
+        f"<b>▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰</b>\n"
+        f"<b>💰 Step 2 of 2</b>\n\n"
+        f"<b>Your current balance: ${balance:.2f}</b>\n\n"
         f"How much do you want to withdraw?\n"
-        f"📌 Example: `10`\n\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"📌 <b>Example:</b> <code>10</code>\n\n"
+        f"<b>▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰</b>\n"
         f"Type /cancel to go back.",
-        parse_mode="Markdown")
+        parse_mode="HTML")
     return WITHDRAW_AMOUNT
 
 async def withdraw_amount(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -1705,19 +1743,19 @@ async def withdraw_amount(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             raise ValueError
     except ValueError:
         await update.message.reply_text(
-            "❌ *Invalid amount.* Enter a positive number like `10`.",
-            parse_mode="Markdown")
+            "<b>❌ Invalid amount.</b> Enter a positive number like <code>10</code>.",
+            parse_mode="HTML")
         return WITHDRAW_AMOUNT
 
     balance = get_balance(user.id)
     if balance < amount:
         await update.message.reply_text(
-            f"❌ *Insufficient Balance*\n\n"
-            f"💰 Your balance: *${balance:.2f}*\n"
-            f"💸 Requested:    *${amount:.2f}*\n\n"
-            f"You can only withdraw up to *${balance:.2f}*.\n"
+            f"<b>❌ Insufficient Balance</b>\n\n"
+            f"<b>💰 Your balance: ${balance:.2f}</b>\n"
+            f"<b>💸 Requested:    ${amount:.2f}</b>\n\n"
+            f"You can only withdraw up to <b>${balance:.2f}</b>.\n"
             f"Please enter a lower amount:",
-            parse_mode="Markdown")
+            parse_mode="HTML")
         return WITHDRAW_AMOUNT
 
     upi_val  = ctx.user_data.get("wd_upi", "")
@@ -1737,12 +1775,12 @@ async def withdraw_amount(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     new_balance = get_balance(user.id)
 
     await update.message.reply_text(
-        f"✅ *Withdrawal Request Submitted!*\n\n"
-        f"💸 Amount: *${amount:.2f}*\n"
-        f"🆔 Reference ID: `{wd_id}`\n"
-        f"💰 Remaining Balance: *${new_balance:.2f}*\n\n"
-        f"⏳ Admin will review and process your withdrawal shortly.",
-        parse_mode="Markdown",
+        f"<b>✅ Withdrawal Request Submitted!</b>\n\n"
+        f"<b>💸 Amount: ${amount:.2f}</b>\n"
+        f"<b>🆔 Reference ID:</b> <code>{wd_id}</code>\n"
+        f"<b>💰 Remaining Balance: ${new_balance:.2f}</b>\n\n"
+        f"⏳ <b>Admin will review and process your withdrawal shortly.</b>",
+        parse_mode="HTML",
         reply_markup=main_menu_keyboard())
 
     # Inline buttons for admin
@@ -1752,35 +1790,35 @@ async def withdraw_amount(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ])
 
     upi_line = (
-        f"📲 UPI ID: `{upi_val}`" if upi_type == "upi"
-        else "📲 Payment: QR Code (see below)"
+        f"<b>📲 UPI ID:</b> <code>{upi_val}</code>" if upi_type == "upi"
+        else "<b>📲 Payment:</b> QR Code (see below)"
     )
 
     admin_text = (
-        f"💸 *NEW WITHDRAWAL REQUEST*\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"👤 User: @{user.username or user.first_name} (`{user.id}`)\n"
-        f"💵 Amount: *${amount:.2f}*\n"
+        f"<b>💸 NEW WITHDRAWAL REQUEST</b>\n"
+        f"<b>▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰</b>\n"
+        f"<b>👤 User:</b> @{user.username or user.first_name} (<code>{user.id}</code>)\n"
+        f"<b>💵 Amount: ${amount:.2f}</b>\n"
         f"{upi_line}\n"
-        f"🆔 Withdrawal ID: `{wd_id}`\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━"
+        f"<b>🆔 Withdrawal ID:</b> <code>{wd_id}</code>\n"
+        f"<b>▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰</b>"
     )
 
     # Channel gets NO username, NO UPI — only chat ID, amount, status
     channel_text = (
-        f"💸 <b>WITHDRAWAL REQUEST</b>\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"🆔 User ID: <code>{user.id}</code>\n"
-        f"💵 Amount: <b>${amount:.2f}</b>\n"
-        f"🔖 Withdrawal ID: <code>{wd_id}</code>\n"
-        f"📊 Status: <b>⏳ Pending</b>"
+        f"<b>💸 WITHDRAWAL REQUEST</b>\n"
+        f"<b>▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰</b>\n"
+        f"<b>🆔 User ID:</b> <code>{user.id}</code>\n"
+        f"<b>💵 Amount: ${amount:.2f}</b>\n"
+        f"<b>🔖 Withdrawal ID:</b> <code>{wd_id}</code>\n"
+        f"<b>📊 Status: ⏳ Pending</b>"
     )
 
     if upi_type == "qr":
         await ctx.bot.send_photo(ADMIN_ID, photo=upi_val, caption=admin_text,
-                                 parse_mode="Markdown", reply_markup=wd_kb)
+                                 parse_mode="HTML", reply_markup=wd_kb)
     else:
-        await ctx.bot.send_message(ADMIN_ID, admin_text, parse_mode="Markdown", reply_markup=wd_kb)
+        await ctx.bot.send_message(ADMIN_ID, admin_text, parse_mode="HTML", reply_markup=wd_kb)
 
     await send_to_channel(ctx.bot, FUNDS_CHANNEL, channel_text)
     return ConversationHandler.END
@@ -1814,27 +1852,27 @@ async def wd_approve(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     if update.callback_query:
         await update.callback_query.edit_message_caption(
-            caption=f"✅ *Withdrawal #{wd_id} APPROVED*\n💵 ${wd['amount']:.2f} paid to `{wd['user_id']}`",
-            parse_mode="Markdown") if update.callback_query.message.caption else None
+            caption=f"<b>✅ Withdrawal #{wd_id} — APPROVED</b>\n<b>💵 ${wd['amount']:.2f}</b> paid to <code>{wd['user_id']}</code>",
+            parse_mode="HTML") if update.callback_query.message.caption else None
         try:
             await update.callback_query.edit_message_text(
-                f"✅ *Withdrawal #{wd_id} APPROVED*\n💵 ${wd['amount']:.2f} paid to `{wd['user_id']}`",
-                parse_mode="Markdown")
+                f"<b>✅ Withdrawal #{wd_id} — APPROVED</b>\n<b>💵 ${wd['amount']:.2f}</b> paid to <code>{wd['user_id']}</code>",
+                parse_mode="HTML")
         except Exception:
             pass
         await update.callback_query.answer("✅ Approved!")
     else:
         await update.message.reply_text(
-            f"✅ Withdrawal #{wd_id} approved! *${wd['amount']:.2f}* paid to `{wd['user_id']}`.",
-            parse_mode="Markdown")
+            f"✅ Withdrawal #{wd_id} approved! <b>${wd['amount']:.2f}</b> paid to <code>{wd['user_id']}</code>.",
+            parse_mode="HTML")
 
     await ctx.bot.send_message(
         wd["user_id"],
-        f"🎉 *Withdrawal Approved!*\n\n"
-        f"💸 *${wd['amount']:.2f}* has been processed.\n"
-        f"🆔 Ref: `{wd_id}`\n\n"
-        f"Thank you for using TG Market! 🛒",
-        parse_mode="Markdown",
+        f"<b>🎉 Withdrawal Approved!</b>\n\n"
+        f"<b>💸 ${wd['amount']:.2f}</b> has been processed.\n"
+        f"<b>🆔 Ref:</b> <code>{wd_id}</code>\n\n"
+        f"<b>Thank you for using TG Market! 🛒</b>",
+        parse_mode="HTML",
         reply_markup=main_menu_keyboard())
     await send_to_channel(ctx.bot, FUNDS_CHANNEL,
         f"✅ <b>WITHDRAWAL APPROVED</b>\n"
@@ -1871,23 +1909,23 @@ async def wd_reject(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if update.callback_query:
         try:
             await update.callback_query.edit_message_text(
-                f"❌ *Withdrawal #{wd_id} REJECTED* — balance refunded.",
-                parse_mode="Markdown")
+                f"<b>❌ Withdrawal #{wd_id} — REJECTED</b> — balance refunded.",
+                parse_mode="HTML")
         except Exception:
             pass
         await update.callback_query.answer("❌ Rejected.")
     else:
         await update.message.reply_text(
-            f"❌ Withdrawal #{wd_id} rejected. *${wd['amount']:.2f}* refunded.",
-            parse_mode="Markdown")
+            f"❌ Withdrawal #{wd_id} rejected. <b>${wd['amount']:.2f}</b> refunded.",
+            parse_mode="HTML")
 
     await ctx.bot.send_message(
         wd["user_id"],
-        f"❌ *Withdrawal Rejected*\n\n"
-        f"Your withdrawal of *${wd['amount']:.2f}* (ID: `{wd_id}`) was not approved.\n"
-        f"💰 *${wd['amount']:.2f}* has been refunded to your balance.\n\n"
-        f"Contact 🆘 Support if this is an error.",
-        parse_mode="Markdown",
+        f"<b>❌ Withdrawal Rejected</b>\n\n"
+        f"Your withdrawal of <b>${wd['amount']:.2f}</b> (ID: <code>{wd_id}</code>) was not approved.\n"
+        f"<b>💰 ${wd['amount']:.2f}</b> has been refunded to your balance.\n\n"
+        f"Contact <b>🆘 Support</b> if this is an error.",
+        parse_mode="HTML",
         reply_markup=main_menu_keyboard())
     await send_to_channel(ctx.bot, FUNDS_CHANNEL,
         f"❌ <b>WITHDRAWAL REJECTED</b>\n"
