@@ -255,14 +255,31 @@ async def menu_back(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     bal = get_balance(query.from_user.id)
-    await query.edit_message_text(
+    text = (
         f"<b>⚡ TG MARKET — Main Menu</b>\n"
         f"<b>▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰</b>\n\n"
         f"<b>💼 Wallet Balance</b>\n"
         f"<b>💲 ${bal:.2f} USD</b>\n\n"
         f"<b>🔒 Secure  •  Fast  •  Trusted</b>\n\n"
-        f"What would you like to do?",
-        parse_mode="HTML", reply_markup=main_menu_keyboard())
+        f"What would you like to do?"
+    )
+    # If the message has a photo/caption, delete it and send a fresh message
+    # instead of trying to edit (edit_message_text fails on photo messages)
+    try:
+        if query.message.photo or query.message.document:
+            await query.message.delete()
+            await ctx.bot.send_message(
+                query.from_user.id, text,
+                parse_mode="HTML", reply_markup=main_menu_keyboard())
+        else:
+            await query.edit_message_text(
+                text, parse_mode="HTML", reply_markup=main_menu_keyboard())
+    except Exception:
+        # Fallback: always send a new message
+        await ctx.bot.send_message(
+            query.from_user.id, text,
+            parse_mode="HTML", reply_markup=main_menu_keyboard())
+    return ConversationHandler.END
 
 async def cancel(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
@@ -1992,8 +2009,7 @@ def build_app() -> Application:
         },
         fallbacks=[
             CommandHandler("cancel", sell_cancel),
-            CallbackQueryHandler(lambda u, c: (u.callback_query.answer(), ConversationHandler.END)[1],
-                                 pattern="^menu_back$"),
+            CallbackQueryHandler(menu_back, pattern="^menu_back$"),
         ],
         per_message=False)
     # Admin price panel conversation
