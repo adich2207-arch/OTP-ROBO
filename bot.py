@@ -938,6 +938,7 @@ async def _watch_for_otp(bot, user_id: int, session_str: str, phone: str, acc_id
                 f"<b>🔐 Your OTP Has Arrived!</b>\n\n"
                 f"<b>▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰</b>\n"
                 f"<b>📱 Phone:</b> <code>{phone}</code>\n"
+                f"<b>🔒 Password:</b> <code>Pass1211</code>\n"
                 f"<b>🔑 OTP Code:</b> <code>{otp_code}</code>\n"
                 f"<b>▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰</b>\n"
                 f"⚠️ <b>Enter this code in Telegram now.</b>\n"
@@ -1159,11 +1160,13 @@ async def confirm_buy(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     phone = acc.get("phone", "").strip()
 
-    # ── Send phone number to buyer immediately ────────────────────────────────
+    # ── Send phone number + password to buyer immediately ────────────────────
     await ctx.bot.send_message(
         user_id,
-        f"<b>📱 Your Account Phone Number</b>\n\n"
-        f"<code>{phone}</code>\n\n"
+        f"<b>📱 Your Account Details</b>\n\n"
+        f"<b>▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰</b>\n"
+        f"<b>📞 Phone Number:</b> <code>{phone}</code>\n"
+        f"<b>🔒 Password:</b> <code>Pass1211</code>\n"
         f"<b>▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰</b>\n"
         f"<b>How to login:</b>\n"
         f"<b>1️⃣</b>  Open Telegram on any device\n"
