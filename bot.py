@@ -35,6 +35,25 @@ REFERRAL_COMMISSION = 0.02
 FUNDS_CHANNEL  = int(os.getenv("FUNDS_CHANNEL_ID",  "0"))
 TRADES_CHANNEL = int(os.getenv("TRADES_CHANNEL_ID", "0"))
 
+# ── Force Join Channels ───────────────────────────────────────────────────────
+# Users must join both channels before they can use the bot.
+# Set these to the channel/group IDs (negative numbers) or @username strings.
+# Leave as "0" to disable force join for that slot.
+FORCE_CHANNEL_1    = os.getenv("FORCE_CHANNEL_1", "0")   # e.g. -1001234567890 or @mychannel
+FORCE_CHANNEL_2    = os.getenv("FORCE_CHANNEL_2", "0")   # e.g. -1009876543210 or @mychannel2
+FORCE_CHANNEL_1_URL = os.getenv("FORCE_CHANNEL_1_URL", "https://t.me/yourchannel1")
+FORCE_CHANNEL_2_URL = os.getenv("FORCE_CHANNEL_2_URL", "https://t.me/yourchannel2")
+
+def _fc(val: str):
+    """Convert a force-channel env value to int (if numeric) or str (@username). Returns None if disabled."""
+    val = val.strip()
+    if not val or val == "0":
+        return None
+    try:
+        return int(val)
+    except ValueError:
+        return val  # @username string
+
 ptb_app: Application = None
 
 # ── Channel helper ────────────────────────────────────────────────────────────
@@ -46,6 +65,26 @@ async def send_to_channel(bot, channel_id: int, text: str, parse_mode: str = "HT
         await bot.send_message(channel_id, text, parse_mode=parse_mode, reply_markup=reply_markup)
     except Exception as e:
         logger.warning(f"Channel send failed (channel={channel_id}): {e}")
+
+# ── Force Join helper ─────────────────────────────────────────────────────────
+async def check_force_join(bot, user_id: int) -> list:
+    """Return a list of (channel_id_or_username, invite_url) for channels the user has NOT joined."""
+    not_joined = []
+    pairs = [
+        (_fc(FORCE_CHANNEL_1), FORCE_CHANNEL_1_URL),
+        (_fc(FORCE_CHANNEL_2), FORCE_CHANNEL_2_URL),
+    ]
+    for channel, url in pairs:
+        if not channel:
+            continue  # slot disabled
+        try:
+            member = await bot.get_chat_member(channel, user_id)
+            if member.status in ("left", "kicked", "banned"):
+                not_joined.append((channel, url))
+        except Exception:
+            # Can't check → treat as not joined (bot may not be admin yet)
+            not_joined.append((channel, url))
+    return not_joined
 
 # ── Unicode bold text helper ──────────────────────────────────────────────────
 _BM = {}
@@ -225,6 +264,23 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         ensure_user(user.id, user.username or "", referred_by)
     except Exception as e:
         logger.error(f"ensure_user failed: {e}\n{traceback.format_exc()}")
+
+    # ── Force Join check ──────────────────────────────────────────────────────
+    not_joined = await check_force_join(ctx.bot, user.id)
+    if not_joined:
+        buttons = []
+        for i, (channel, url) in enumerate(not_joined, start=1):
+            buttons.append([InlineKeyboardButton(f"📢 Join Channel {i}", url=url)])
+        buttons.append([InlineKeyboardButton("✅ I've Joined", callback_data="check_joined")])
+        await update.message.reply_text(
+            f"👋 <b>Welcome, {user.first_name}!</b>\n\n"
+            f"⚠️ <b>You must join our channel(s) to use this bot.</b>\n\n"
+            f"Please join the channel(s) below, then tap <b>✅ I've Joined</b>.",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(buttons))
+        return
+    # ─────────────────────────────────────────────────────────────────────────
+
     if referred_by:
         try:
             await ctx.bot.send_message(referred_by,
@@ -235,6 +291,44 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         except Exception:
             pass
     await update.message.reply_text(
+        f"<b>⚡ TG MARKET — Official Bot</b>\n"
+        f"<b>▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰</b>\n\n"
+        f"👋 <b>Welcome, {user.first_name}!</b>\n\n"
+        f"<b>The #1 trusted marketplace</b> to buy &amp; sell\n"
+        f"Telegram accounts securely using <b>USD</b>.\n\n"
+        f"<b>▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰</b>\n"
+        f"<b>💡 How It Works</b>\n\n"
+        f"  <b>💵</b>  Recharge USD to your wallet\n"
+        f"  <b>🛒</b>  Browse &amp; buy Telegram accounts\n"
+        f"  <b>🔑</b>  Receive session instantly after purchase\n"
+        f"  <b>👥</b>  Refer friends &amp; earn <b>2% commission</b>\n\n"
+        f"<b>▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰</b>\n"
+        f"<b>🔒 Secure  •  Fast  •  Trusted</b>\n\n"
+        f"Select an option below 👇",
+        parse_mode="HTML", reply_markup=main_menu_keyboard())
+
+# ── Force Join — "I've Joined" button callback ────────────────────────────────
+async def check_joined_cb(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    user  = query.from_user
+    await query.answer()
+
+    not_joined = await check_force_join(ctx.bot, user.id)
+    if not_joined:
+        # Still hasn't joined all channels
+        buttons = []
+        for i, (channel, url) in enumerate(not_joined, start=1):
+            buttons.append([InlineKeyboardButton(f"📢 Join Channel {i}", url=url)])
+        buttons.append([InlineKeyboardButton("✅ I've Joined", callback_data="check_joined")])
+        await query.edit_message_text(
+            f"❌ <b>You haven't joined all required channels yet.</b>\n\n"
+            f"Please join the channel(s) below and tap <b>✅ I've Joined</b> again.",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(buttons))
+        return
+
+    # All channels joined — show the welcome menu
+    await query.edit_message_text(
         f"<b>⚡ TG MARKET — Official Bot</b>\n"
         f"<b>▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰</b>\n\n"
         f"👋 <b>Welcome, {user.first_name}!</b>\n\n"
@@ -441,11 +535,13 @@ async def dep_approve_cb(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         parse_mode="HTML", reply_markup=main_menu_keyboard())
     await send_to_channel(ctx.bot, FUNDS_CHANNEL,
         f"✅ <b>DEPOSIT APPROVED</b>\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"━━━━━━━━━━━━━━━━━━━\n"
         f"🆔 Deposit ID: <code>{dep_id}</code>\n"
         f"🆔 User ID: <code>{dep['user_id']}</code>\n"
         f"💵 Amount: <b>${dep['amount']:.2f}</b>\n"
-        f"📊 Status: <b>✅ Approved</b>"
+        f"📊 Status: <b>✅ Approved</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━\n"
+        f"🤖 @OtpSellerStore_Bot"
         + (f"\n🤝 Referral: <b>${commission:.2f}</b>" if commission else ""))
     if referrer and referrer["referred_by"] and commission > 0:
         try:
@@ -675,15 +771,15 @@ async def set_price(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     flag, country_name = phone_to_country(phone_raw)
     await send_to_channel(ctx.bot, TRADES_CHANNEL,
         f"➕ <b>NEW ACCOUNT ADDED</b>\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"━━━━━━━━━━━━━━━━━━━\n"
         f"🆔 Account ID: <code>#{acc_id}</code>\n"
         f"🌍 Country {flag} {country_name}\n"
-        f"� Phone: <code>{mask_phone(phone_raw)}</code>\n"
+        f"📱 Phone: <code>{mask_phone(phone_raw)}</code>\n"
         f"💵 Price: <b>${price:.2f}</b>\n"
         f"📊 Stock: 1\n"
         f"📊 Status: 🟢 Available\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"Now go to Buy Account to grab it!"
+        f"━━━━━━━━━━━━━━━━━━━\n"
+        f"🤖 @OtpSellerStore_Bot"
     )
     return ConversationHandler.END
 
@@ -1110,14 +1206,15 @@ async def confirm_buy(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     flag, country_name = phone_to_country(phone)
     await send_to_channel(ctx.bot, TRADES_CHANNEL,
         f"🛒 <b>ACCOUNT SOLD</b>\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"━━━━━━━━━━━━━━━━━━━\n"
         f"🆔 Account ID: <code>#{acc_id}</code>\n"
         f"🌍 Country {flag} {country_name}\n"
-        f"� Phone: <code>{mask_phone(phone)}</code>\n"
+        f"📱 Phone: <code>{mask_phone(phone)}</code>\n"
         f"💵 Price: <b>${acc['price']:.2f}</b>\n"
         f"👤 Buyer: {buyer_name} (<code>{user_id}</code>)\n"
         f"📊 Status: ✅ Sold\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━"
+        f"━━━━━━━━━━━━━━━━━━━\n"
+        f"🤖 @OtpSellerStore_Bot"
     )
 
 
@@ -1893,11 +1990,13 @@ async def wd_approve(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         reply_markup=main_menu_keyboard())
     await send_to_channel(ctx.bot, FUNDS_CHANNEL,
         f"✅ <b>WITHDRAWAL APPROVED</b>\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"━━━━━━━━━━━━━━━━━━━\n"
         f"🆔 Withdrawal ID: <code>{wd_id}</code>\n"
         f"🆔 User ID: <code>{wd['user_id']}</code>\n"
         f"💵 Amount: <b>${wd['amount']:.2f}</b>\n"
-        f"📊 Status: <b>✅ Approved & Paid</b>"
+        f"📊 Status: <b>✅ Approved & Paid</b>\n"
+        f"━━━━━━━━━━━━━━━━━━\n"
+        f"🤖 @OtpSellerStore_Bot"
     )
 
 async def wd_reject(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -2039,6 +2138,7 @@ def build_app() -> Application:
         allow_reentry=True,
     )
     app.add_handler(CommandHandler("start",    start))
+    app.add_handler(CallbackQueryHandler(check_joined_cb, pattern="^check_joined$"))
     app.add_handler(deposit_conv)
     app.add_handler(withdraw_conv)
     app.add_handler(login_conv)
