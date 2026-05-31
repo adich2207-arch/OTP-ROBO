@@ -2201,7 +2201,13 @@ def build_app() -> Application:
             ADMIN_2FA_PASSWORD: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_2fa_password)],
             ADMIN_ADD_PRICE:    [MessageHandler(filters.TEXT & ~filters.COMMAND, set_price)],
         },
-        fallbacks=[CommandHandler("cancel", cancel)], per_message=False)
+        fallbacks=[
+            CommandHandler("cancel", cancel),
+            CommandHandler("login_account", admin_login),
+        ],
+        per_message=False,
+        allow_reentry=True,
+    )
     sell_conv = ConversationHandler(
         entry_points=[CallbackQueryHandler(sell_menu, pattern="^menu_sell$")],
         states={
