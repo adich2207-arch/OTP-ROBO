@@ -109,19 +109,60 @@ def mask_phone(phone: str) -> str:
     masked        = "*" * (len(p) - 5)
     return f"+{visible_start}{masked}{visible_end}"
 
+_BUILTIN_DIAL_MAP = [
+    # sorted longest-first so more specific codes match before shorter ones
+    ("880", "BD", "Bangladesh"), ("977", "NP", "Nepal"), ("971", "AE", "UAE"),
+    ("966", "SA", "Saudi Arabia"), ("234", "NG", "Nigeria"), ("380", "UA", "Ukraine"),
+    ("351", "PT", "Portugal"), ("353", "IE", "Ireland"), ("358", "FI", "Finland"),
+    ("370", "LT", "Lithuania"), ("371", "LV", "Latvia"), ("372", "EE", "Estonia"),
+    ("375", "BY", "Belarus"), ("994", "AZ", "Azerbaijan"), ("998", "UZ", "Uzbekistan"),
+    ("996", "KG", "Kyrgyzstan"), ("992", "TJ", "Tajikistan"), ("993", "TM", "Turkmenistan"),
+    ("995", "GE", "Georgia"), ("374", "AM", "Armenia"), ("964", "IQ", "Iraq"),
+    ("963", "SY", "Syria"), ("962", "JO", "Jordan"), ("961", "LB", "Lebanon"),
+    ("967", "YE", "Yemen"), ("968", "OM", "Oman"), ("974", "QA", "Qatar"),
+    ("973", "BH", "Bahrain"), ("965", "KW", "Kuwait"), ("213", "DZ", "Algeria"),
+    ("216", "TN", "Tunisia"), ("212", "MA", "Morocco"), ("218", "LY", "Libya"),
+    ("249", "SD", "Sudan"), ("251", "ET", "Ethiopia"), ("254", "KE", "Kenya"),
+    ("255", "TZ", "Tanzania"), ("256", "UG", "Uganda"), ("260", "ZM", "Zambia"),
+    ("263", "ZW", "Zimbabwe"), ("233", "GH", "Ghana"), ("225", "CI", "Ivory Coast"),
+    ("221", "SN", "Senegal"), ("237", "CM", "Cameroon"), ("243", "CD", "DR Congo"),
+    ("94",  "LK", "Sri Lanka"), ("95",  "MM", "Myanmar"), ("98",  "IR", "Iran"),
+    ("92",  "PK", "Pakistan"), ("91",  "IN", "India"),   ("90",  "TR", "Turkey"),
+    ("86",  "CN", "China"),    ("84",  "VN", "Vietnam"), ("82",  "KR", "South Korea"),
+    ("81",  "JP", "Japan"),    ("66",  "TH", "Thailand"), ("65",  "SG", "Singapore"),
+    ("63",  "PH", "Philippines"), ("62", "ID", "Indonesia"), ("60", "MY", "Malaysia"),
+    ("55",  "BR", "Brazil"),   ("54",  "AR", "Argentina"), ("52", "MX", "Mexico"),
+    ("51",  "PE", "Peru"),     ("57",  "CO", "Colombia"), ("56", "CL", "Chile"),
+    ("49",  "DE", "Germany"),  ("48",  "PL", "Poland"),  ("47", "NO", "Norway"),
+    ("46",  "SE", "Sweden"),   ("45",  "DK", "Denmark"), ("43", "AT", "Austria"),
+    ("41",  "CH", "Switzerland"), ("40", "RO", "Romania"), ("39", "IT", "Italy"),
+    ("38",  "UA", "Ukraine"),  ("36",  "HU", "Hungary"), ("34", "ES", "Spain"),
+    ("33",  "FR", "France"),   ("32",  "BE", "Belgium"), ("31", "NL", "Netherlands"),
+    ("30",  "GR", "Greece"),   ("27",  "ZA", "South Africa"), ("20", "EG", "Egypt"),
+    ("64",  "NZ", "New Zealand"), ("61", "AU", "Australia"),
+    ("44",  "GB", "UK"),       ("7",   "RU", "Russia"),  ("1",  "US", "USA"),
+]
+
 def phone_to_country(phone: str) -> tuple:
-    """Return (flag_emoji, country_name) by matching dial code from country_prices table.
-    Falls back to generic globe if not found."""
+    """Return (flag_emoji, country_name) by matching dial code.
+    First checks country_prices table, then falls back to built-in map."""
     try:
         p = phone.strip().lstrip("+")
-        with get_db() as conn:
-            rows = conn.execute(
-                "SELECT country_code, country_name, dial_code FROM country_prices ORDER BY LENGTH(dial_code) DESC"
-            ).fetchall()
-        for r in rows:
-            if p.startswith(r["dial_code"]):
-                flag = country_flag(r["country_code"])
-                return flag, r["country_name"]
+        # 1. Try the database table first (admin-configured countries take priority)
+        try:
+            with get_db() as conn:
+                rows = conn.execute(
+                    "SELECT country_code, country_name, dial_code FROM country_prices ORDER BY LENGTH(dial_code) DESC"
+                ).fetchall()
+            for r in rows:
+                if r["dial_code"] and p.startswith(r["dial_code"]):
+                    return country_flag(r["country_code"]), r["country_name"]
+        except Exception:
+            pass
+        # 2. Fallback to built-in dial code map
+        for dial, code, name in _BUILTIN_DIAL_MAP:
+            if p.startswith(dial):
+                return country_flag(code), name
     except Exception:
         pass
     return "🌍", "Unknown"
@@ -1032,32 +1073,15 @@ async def buy_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
 
     # Group accounts by country using dial code matching
-    # Built-in fallback dial code map (used when country_prices table has no match)
-    _BUILTIN_DIAL = {
-        "91": ("IN", "India"), "1": ("US", "USA"), "44": ("GB", "UK"),
-        "92": ("PK", "Pakistan"), "880": ("BD", "Bangladesh"), "977": ("NP", "Nepal"),
-        "94": ("LK", "Sri Lanka"), "62": ("ID", "Indonesia"), "60": ("MY", "Malaysia"),
-        "63": ("PH", "Philippines"), "66": ("TH", "Thailand"), "84": ("VN", "Vietnam"),
-        "86": ("CN", "China"), "81": ("JP", "Japan"), "82": ("KR", "South Korea"),
-        "7": ("RU", "Russia"), "380": ("UA", "Ukraine"), "49": ("DE", "Germany"),
-        "33": ("FR", "France"), "34": ("ES", "Spain"), "39": ("IT", "Italy"),
-        "55": ("BR", "Brazil"), "52": ("MX", "Mexico"), "54": ("AR", "Argentina"),
-        "20": ("EG", "Egypt"), "234": ("NG", "Nigeria"), "27": ("ZA", "South Africa"),
-        "971": ("AE", "UAE"), "966": ("SA", "Saudi Arabia"), "98": ("IR", "Iran"),
-        "90": ("TR", "Turkey"), "48": ("PL", "Poland"), "31": ("NL", "Netherlands"),
-        "61": ("AU", "Australia"), "64": ("NZ", "New Zealand"),
-    }
-
     def get_country(phone):
         p = phone.strip().lstrip("+")
         # First try country_prices table (longest match first)
         for c in countries:
             if c["dial_code"] and p.startswith(c["dial_code"]):
                 return c["country_code"], c["country_name"], c["dial_code"]
-        # Fallback: built-in map (longest match first)
-        for dial in sorted(_BUILTIN_DIAL.keys(), key=len, reverse=True):
+        # Fallback: built-in map (already sorted longest-first)
+        for dial, code, name in _BUILTIN_DIAL_MAP:
             if p.startswith(dial):
-                code, name = _BUILTIN_DIAL[dial]
                 return code, name, dial
         return "XX", "Other", "0"
 
@@ -1117,28 +1141,16 @@ async def buy_country(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         accs = [a for a in all_accs if (a["phone"] or "").strip().lstrip("+").startswith(dial)]
     else:
         # Check built-in fallback map for this country_code
-        _BUILTIN_BY_CODE = {
-            "IN": ("91", "India"), "US": ("1", "USA"), "GB": ("44", "UK"),
-            "PK": ("92", "Pakistan"), "BD": ("880", "Bangladesh"), "NP": ("977", "Nepal"),
-            "LK": ("94", "Sri Lanka"), "ID": ("62", "Indonesia"), "MY": ("60", "Malaysia"),
-            "PH": ("63", "Philippines"), "TH": ("66", "Thailand"), "VN": ("84", "Vietnam"),
-            "CN": ("86", "China"), "JP": ("81", "Japan"), "KR": ("82", "South Korea"),
-            "RU": ("7", "Russia"), "UA": ("380", "Ukraine"), "DE": ("49", "Germany"),
-            "FR": ("33", "France"), "ES": ("34", "Spain"), "IT": ("39", "Italy"),
-            "BR": ("55", "Brazil"), "MX": ("52", "Mexico"), "AR": ("54", "Argentina"),
-            "EG": ("20", "Egypt"), "NG": ("234", "Nigeria"), "ZA": ("27", "South Africa"),
-            "AE": ("971", "UAE"), "SA": ("966", "Saudi Arabia"), "IR": ("98", "Iran"),
-            "TR": ("90", "Turkey"), "PL": ("48", "Poland"), "NL": ("31", "Netherlands"),
-            "AU": ("61", "Australia"), "NZ": ("64", "New Zealand"),
-        }
-        if country_code in _BUILTIN_BY_CODE:
-            dial, name = _BUILTIN_BY_CODE[country_code]
+        builtin_match = next(((d, n) for d, c, n in _BUILTIN_DIAL_MAP if c == country_code), None)
+        if builtin_match:
+            dial, name = builtin_match
             flag = country_flag(country_code)
             accs = [a for a in all_accs if (a["phone"] or "").strip().lstrip("+").startswith(dial)]
         else:
             # "XX" / Other — show accounts that don't match ANY known dial code
             dial, name, flag = "0", "Other", "🌍"
             known_dials = [r["dial_code"] for r in all_dials if r["dial_code"]]
+            known_dials += [d for d, c, n in _BUILTIN_DIAL_MAP]
             def matches_any(phone):
                 p = (phone or "").strip().lstrip("+")
                 for d in known_dials:
