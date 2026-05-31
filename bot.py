@@ -130,6 +130,8 @@ def phone_to_country(phone: str) -> tuple:
  SELL_PHONE, SELL_OTP, SELL_PRICE, WITHDRAW_UPI, WITHDRAW_AMOUNT,
  DEPOSIT_SCREENSHOT) = range(10)
 
+ADMIN_2FA_PASSWORD = 10  # extra state for two-step verification password
+
 # ── Payment details (set these in Render env vars) ────────────────────────────
 PAYMENT_UPI    = os.getenv("PAYMENT_UPI", "yourname@upi")
 PAYMENT_QR     = os.getenv("PAYMENT_QR_FILE_ID", "")   # Telegram file_id (optional)
@@ -747,8 +749,40 @@ async def get_otp(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             parse_mode="HTML")
         return ADMIN_ADD_PRICE
     except Exception as e:
+        err = str(e)
+        # ── Two-step verification required ────────────────────────────────────
+        if "Two-steps verification" in err or "SessionPasswordNeeded" in err or "password" in err.lower():
+            await update.message.reply_text(
+                "<b>🔐 Two-Step Verification Required</b>\n\n"
+                "This account has a <b>2FA password</b> enabled.\n\n"
+                "Please enter the <b>account password</b> now:",
+                parse_mode="HTML")
+            return ADMIN_2FA_PASSWORD
         await update.message.reply_text(f"<b>❌ Login failed</b>\n\n<code>{e}</code>\n\nRun /login_account to try again.", parse_mode="HTML")
         return ConversationHandler.END
+
+async def get_2fa_password(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Admin entered the 2FA password after OTP was accepted."""
+    password = update.message.text.strip()
+    client   = ctx.user_data.get("client")
+    if not client:
+        await update.message.reply_text("❌ Session expired. Run /login_account again.")
+        return ConversationHandler.END
+    try:
+        await client.sign_in(password=password)
+        session_string = client.session.save()
+        await client.disconnect()
+        ctx.user_data["session"] = session_string
+        await update.message.reply_text(
+            "<b>✅ Login successful!</b>\n\n<b>💵 Now enter the price</b> for this account (e.g. <code>25</code>):",
+            parse_mode="HTML")
+        return ADMIN_ADD_PRICE
+    except Exception as e:
+        await update.message.reply_text(
+            f"<b>❌ 2FA Password incorrect</b>\n\n<code>{e}</code>\n\n"
+            "Please enter the correct password, or run /login_account to start over.",
+            parse_mode="HTML")
+        return ADMIN_2FA_PASSWORD  # let them retry the password
 
 async def set_price(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     try:
@@ -2096,9 +2130,10 @@ def build_app() -> Application:
     login_conv = ConversationHandler(
         entry_points=[CommandHandler("login_account", admin_login)],
         states={
-            ADMIN_PHONE:     [MessageHandler(filters.TEXT & ~filters.COMMAND, get_phone)],
-            ADMIN_OTP:       [MessageHandler(filters.TEXT & ~filters.COMMAND, get_otp)],
-            ADMIN_ADD_PRICE: [MessageHandler(filters.TEXT & ~filters.COMMAND, set_price)],
+            ADMIN_PHONE:        [MessageHandler(filters.TEXT & ~filters.COMMAND, get_phone)],
+            ADMIN_OTP:          [MessageHandler(filters.TEXT & ~filters.COMMAND, get_otp)],
+            ADMIN_2FA_PASSWORD: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_2fa_password)],
+            ADMIN_ADD_PRICE:    [MessageHandler(filters.TEXT & ~filters.COMMAND, set_price)],
         },
         fallbacks=[CommandHandler("cancel", cancel)], per_message=False)
     sell_conv = ConversationHandler(
