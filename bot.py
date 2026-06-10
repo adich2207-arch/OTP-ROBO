@@ -113,9 +113,9 @@ def b(text: str) -> str:
 USD_TO_INR = float(os.getenv("USD_TO_INR", "83.5"))
 
 def fmt(usd: float) -> str:
-    """Format a USD amount as  ₹{inr} (${usd})  e.g. ₹417 ($5.00)"""
-    inr = round(usd * USD_TO_INR)
-    return f"₹{inr} ({fmt(usd)})"
+    """Format a USD amount as  ₹{inr} ($x.xx)  e.g. ₹417 ($5.00)"""
+    inr = round(float(usd) * USD_TO_INR)
+    return f"₹{inr} (${float(usd):.2f})"
 
 def mask_phone(phone: str) -> str:
     """Format phone as +923*******19 — shows first 3 and last 2 digits, masks the rest."""
@@ -415,7 +415,7 @@ async def menu_back(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f"<b>⚡ TG MARKET — Main Menu</b>\n"
         f"<b>▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰</b>\n\n"
         f"<b>💼 Wallet Balance</b>\n"
-        f"<b>💲 {fmt(bal)} USD</b>\n\n"
+        f"<b>💲 {fmt(bal)}</b>\n\n"
         f"<b>🔒 Secure  •  Fast  •  Trusted</b>\n\n"
         f"What would you like to do?"
     )
@@ -1951,7 +1951,7 @@ async def show_balance(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f"<b>📊 MY WALLET</b>\n"
         f"<b>▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰</b>\n\n"
         f"<b>💼 Available Balance</b>\n"
-        f"<b>💲 {fmt(get_balance(user.id))} USD</b>\n\n"
+        f"<b>💲 {fmt(get_balance(user.id))}</b>\n\n"
         f"<b>▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰</b>\n"
         f"<b>👥 Referrals:</b>       <b>{get_referral_count(user.id)}</b>\n"
         f"<b>🤝 Referral Earned:</b> <b>{fmt(get_referral_earnings(user.id))}</b>\n"
