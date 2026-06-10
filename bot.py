@@ -84,14 +84,16 @@ async def check_force_join(bot, user_id: int) -> list:
         try:
             chat = await bot.get_chat(channel)
             title = chat.title or str(channel)
-        except Exception:
+        except Exception as e:
+            logger.warning(f"[ForceJoin] get_chat({channel}) failed: {e}")
             title = str(channel)
         try:
             member = await bot.get_chat_member(channel, user_id)
+            logger.info(f"[ForceJoin] user={user_id} channel={channel} status={member.status}")
             if member.status in ("left", "kicked", "banned"):
                 not_joined.append((channel, url, title))
-        except Exception:
-            # Can't check → treat as not joined (bot may not be admin yet)
+        except Exception as e:
+            logger.warning(f"[ForceJoin] get_chat_member({channel}, {user_id}) failed: {e} — treating as not joined")
             not_joined.append((channel, url, title))
     return not_joined
 
