@@ -377,9 +377,18 @@ async def check_joined_cb(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     user  = query.from_user
     await query.answer()
 
-    not_joined = await check_force_join(ctx.bot, user.id)
+    try:
+        not_joined = await check_force_join(ctx.bot, user.id)
+    except Exception as e:
+        logger.error(f"[check_joined_cb] check_force_join crashed: {e}\n{traceback.format_exc()}")
+        await query.edit_message_text(
+            "⚠️ Could not verify your membership right now. Please try again in a moment.",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("✅ Try Again", callback_data="check_joined")]
+            ]))
+        return
+
     if not_joined:
-        # Still hasn't joined all channels
         buttons = []
         for channel, url, title in not_joined:
             buttons.append([InlineKeyboardButton(f"📢 Join {title}", url=url)])
