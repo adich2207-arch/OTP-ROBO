@@ -2424,11 +2424,8 @@ async def admin_broadcast(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         try:
             await ctx.bot.send_message(
                 u["user_id"],
-                f"📢 <b>Announcement</b>\n"
-                f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
-                f"{text}",
+                text,
                 parse_mode="HTML",
-                reply_markup=kb
             )
             sent += 1
         except Exception:
