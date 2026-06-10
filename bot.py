@@ -30,19 +30,21 @@ API_HASH         = os.getenv("API_HASH", "")
 REFERRAL_COMMISSION = 0.02
 
 # ── Channel IDs ───────────────────────────────────────────────────────────────
-# FUNDS_CHANNEL  : deposit & withdrawal requests go here (admin approves from here)
-# TRADES_CHANNEL : buy/sell/add account activity goes here
-FUNDS_CHANNEL  = int(os.getenv("FUNDS_CHANNEL_ID",  "0"))
+# TRADES_CHANNEL : all activity goes here — buy/sell, deposits, withdrawals
 TRADES_CHANNEL = int(os.getenv("TRADES_CHANNEL_ID", "0"))
 
-# ── Force Join Channels ───────────────────────────────────────────────────────
-# Users must join both channels before they can use the bot.
-# Set these to the channel/group IDs (negative numbers) or @username strings.
-# Leave as "0" to disable force join for that slot.
-FORCE_CHANNEL_1    = os.getenv("FORCE_CHANNEL_1", "0")   # e.g. -1001234567890 or @mychannel
-FORCE_CHANNEL_2    = os.getenv("FORCE_CHANNEL_2", "0")   # e.g. -1009876543210 or @mychannel2
+# ── Force Join ────────────────────────────────────────────────────────────────
+# Users must join before using the bot.
+# FORCE_CHANNEL_1 / FORCE_CHANNEL_2 : channels (read-only announcements etc.)
+# FORCE_GROUP                        : your community group (users interact here)
+# Set IDs as negative numbers (e.g. -1001234567890) or @username strings.
+# Leave as "0" to disable that slot.
+FORCE_CHANNEL_1     = os.getenv("FORCE_CHANNEL_1",     "0")
+FORCE_CHANNEL_2     = os.getenv("FORCE_CHANNEL_2",     "0")
+FORCE_GROUP         = os.getenv("FORCE_GROUP",          "0")
 FORCE_CHANNEL_1_URL = os.getenv("FORCE_CHANNEL_1_URL", "https://t.me/yourchannel1")
 FORCE_CHANNEL_2_URL = os.getenv("FORCE_CHANNEL_2_URL", "https://t.me/yourchannel2")
+FORCE_GROUP_URL     = os.getenv("FORCE_GROUP_URL",      "https://t.me/yourgroup")
 
 def _fc(val: str):
     """Convert a force-channel env value to int (if numeric) or str (@username). Returns None if disabled."""
@@ -68,16 +70,17 @@ async def send_to_channel(bot, channel_id: int, text: str, parse_mode: str = "HT
 
 # ── Force Join helper ─────────────────────────────────────────────────────────
 async def check_force_join(bot, user_id: int) -> list:
-    """Return a list of (channel_id_or_username, invite_url, channel_title) for channels the user has NOT joined."""
+    """Return a list of (channel_id_or_username, invite_url, channel_title) for channels/groups the user has NOT joined."""
     not_joined = []
     pairs = [
         (_fc(FORCE_CHANNEL_1), FORCE_CHANNEL_1_URL),
         (_fc(FORCE_CHANNEL_2), FORCE_CHANNEL_2_URL),
+        (_fc(FORCE_GROUP),     FORCE_GROUP_URL),
     ]
     for channel, url in pairs:
         if not channel:
             continue  # slot disabled
-        # Fetch channel title for the button label
+        # Fetch channel/group title for the button label
         try:
             chat = await bot.get_chat(channel)
             title = chat.title or str(channel)
@@ -104,6 +107,15 @@ for _i, _c in enumerate("0123456789"):
 def b(text: str) -> str:
     """Convert text to Unicode Mathematical Bold Sans-Serif — works in buttons too."""
     return "".join(_BM.get(c, c) for c in text)
+
+# ── Currency formatter ────────────────────────────────────────────────────────
+# USD to INR conversion rate — update this value to adjust the displayed INR amount.
+USD_TO_INR = float(os.getenv("USD_TO_INR", "83.5"))
+
+def fmt(usd: float) -> str:
+    """Format a USD amount as  ₹{inr} (${usd})  e.g. ₹417 ($5.00)"""
+    inr = round(usd * USD_TO_INR)
+    return f"₹{inr} ({fmt(usd)})"
 
 def mask_phone(phone: str) -> str:
     """Format phone as +923*******19 — shows first 3 and last 2 digits, masks the rest."""
@@ -345,10 +357,10 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f"<b>▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰</b>\n\n"
         f"👋 <b>Welcome, {user.first_name}!</b>\n\n"
         f"<b>The #1 trusted marketplace</b> to buy &amp; sell\n"
-        f"Telegram accounts securely using <b>USD</b>.\n\n"
+        f"Telegram accounts securely using <b>INR</b>.\n\n"
         f"<b>▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰</b>\n"
         f"<b>💡 How It Works</b>\n\n"
-        f"  <b>💵</b>  Recharge USD to your wallet\n"
+        f"  <b>💵</b>  Recharge INR to your wallet\n"
         f"  <b>🛒</b>  Browse &amp; buy Telegram accounts\n"
         f"  <b>🔑</b>  Receive session instantly after purchase\n"
         f"  <b>👥</b>  Refer friends &amp; earn <b>2% commission</b>\n\n"
@@ -383,10 +395,10 @@ async def check_joined_cb(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f"<b>▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰</b>\n\n"
         f"👋 <b>Welcome, {user.first_name}!</b>\n\n"
         f"<b>The #1 trusted marketplace</b> to buy &amp; sell\n"
-        f"Telegram accounts securely using <b>USD</b>.\n\n"
+        f"Telegram accounts securely using <b>INR</b>.\n\n"
         f"<b>▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰</b>\n"
         f"<b>💡 How It Works</b>\n\n"
-        f"  <b>💵</b>  Recharge USD to your wallet\n"
+        f"  <b>💵</b>  Recharge INR to your wallet\n"
         f"  <b>🛒</b>  Browse &amp; buy Telegram accounts\n"
         f"  <b>🔑</b>  Receive session instantly after purchase\n"
         f"  <b>👥</b>  Refer friends &amp; earn <b>2% commission</b>\n\n"
@@ -403,7 +415,7 @@ async def menu_back(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f"<b>⚡ TG MARKET — Main Menu</b>\n"
         f"<b>▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰</b>\n\n"
         f"<b>💼 Wallet Balance</b>\n"
-        f"<b>💲 ${bal:.2f} USD</b>\n\n"
+        f"<b>💲 {fmt(bal)} USD</b>\n\n"
         f"<b>🔒 Secure  •  Fast  •  Trusted</b>\n\n"
         f"What would you like to do?"
     )
@@ -439,7 +451,7 @@ async def deposit_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await query.edit_message_text(
         f"<b>💵 RECHARGE WALLET</b>\n"
         f"<b>▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰</b>\n\n"
-        f"Enter the amount in <b>USD</b> you want to deposit.\n\n"
+        f"Enter the amount in <b>INR</b> you want to deposit.\n\n"
         f"📌 <b>Example:</b> <code>50</code>\n\n"
         f"<b>▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰</b>\n"
         f"✏️ <b>Type the amount below</b> or /cancel to go back:",
@@ -463,7 +475,7 @@ async def deposit_amount(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data["dep_amount"] = amount
 
     msg = (
-        f"<b>💵 Amount to Pay: ${amount:.2f}</b>\n\n"
+        f"<b>💵 Amount to Pay: {fmt(amount)}</b>\n\n"
         f"<b>▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰</b>\n"
         f"<b>📲 Pay via UPI:</b>\n"
         f"<code>{PAYMENT_UPI}</code>\n\n"
@@ -519,7 +531,7 @@ async def deposit_screenshot(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f"<b>📥 NEW DEPOSIT REQUEST</b>\n"
         f"<b>▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰</b>\n"
         f"<b>👤 User:</b> @{user.username or user.first_name} (<code>{user.id}</code>)\n"
-        f"<b>💵 Amount: ${amount:.2f}</b>\n"
+        f"<b>💵 Amount: {fmt(amount)}</b>\n"
         f"<b>🆔 Deposit ID:</b> <code>{dep_id}</code>\n"
         f"<b>▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰</b>\n"
         f"📸 <b>Payment screenshot attached.</b>"
@@ -534,18 +546,18 @@ async def deposit_screenshot(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         reply_markup=admin_kb)
 
     # Channel gets NO screenshot — just basic info
-    await send_to_channel(ctx.bot, FUNDS_CHANNEL,
+    await send_to_channel(ctx.bot, TRADES_CHANNEL,
         f"📥 <b>DEPOSIT REQUEST</b>\n"
         f"━━━━━━━━━━━━━━━━━━━━━━\n"
         f"🆔 User ID: <code>{user.id}</code>\n"
-        f"💵 Amount: <b>${amount:.2f}</b>\n"
+        f"💵 Amount: <b>{fmt(amount)}</b>\n"
         f"🔖 Deposit ID: <code>{dep_id}</code>\n"
         f"📊 Status: <b>⏳ Pending</b>"
     )
 
     await update.message.reply_text(
         f"<b>✅ Screenshot Received!</b>\n\n"
-        f"<b>💵 Amount: ${amount:.2f}</b>\n"
+        f"<b>💵 Amount: {fmt(amount)}</b>\n"
         f"<b>🆔 Reference ID:</b> <code>{dep_id}</code>\n\n"
         f"⏳ <b>Admin will verify your payment and credit your balance shortly.</b>",
         parse_mode="HTML",
@@ -575,11 +587,11 @@ async def dep_approve_cb(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             conn.execute("INSERT INTO referral_earnings (referrer_id,referred_id,deposit_id,commission) VALUES (%s,%s,%s,%s)",
                 (referrer["referred_by"], dep["user_id"], dep_id, commission))
     await query.edit_message_caption(
-        caption=f"<b>✅ Deposit #{dep_id} — APPROVED</b>\n<b>💵 ${dep['amount']:.2f}</b> credited to <code>{dep['user_id']}</code>",
+        caption=f"<b>✅ Deposit #{dep_id} — APPROVED</b>\n<b>💵 {fmt(dep['amount'])}</b> credited to <code>{dep['user_id']}</code>",
         parse_mode="HTML")
     await ctx.bot.send_message(dep["user_id"],
         f"<b>🎉 Deposit Approved!</b>\n\n"
-        f"<b>💵 ${dep['amount']:.2f}</b> has been added to your wallet.\n"
+        f"<b>💵 {fmt(dep['amount'])}</b> has been added to your wallet.\n"
         f"<b>🆔 Ref:</b> <code>{dep_id}</code>\n\n"
         f"<b>Start shopping now! 🛒</b>",
         parse_mode="HTML", reply_markup=main_menu_keyboard())
@@ -587,21 +599,21 @@ async def dep_approve_cb(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     dep_buy_kb = InlineKeyboardMarkup([
         [InlineKeyboardButton("🛒 Buy Now", url=f"https://t.me/{bot_username}?start=buy")]
     ])
-    await send_to_channel(ctx.bot, FUNDS_CHANNEL,
+    await send_to_channel(ctx.bot, TRADES_CHANNEL,
         f"✅ <b>DEPOSIT APPROVED</b>\n"
         f"━━━━━━━━━━━━━━━━━━━\n"
         f"🆔 Deposit ID: <code>{dep_id}</code>\n"
         f"🆔 User ID: <code>{dep['user_id']}</code>\n"
-        f"💵 Amount: <b>${dep['amount']:.2f}</b>\n"
+        f"💵 Amount: <b>{fmt(dep['amount'])}</b>\n"
         f"📊 Status: <b>✅ Approved</b>\n"
         f"━━━━━━━━━━━━━━━━━━━\n"
         f"🤖 @OtpSellerStore_Bot"
-        + (f"\n🤝 Referral: <b>${commission:.2f}</b>" if commission else ""),
+        + (f"\n🤝 Referral: <b>{fmt(commission)}</b>" if commission else ""),
         reply_markup=dep_buy_kb)
     if referrer and referrer["referred_by"] and commission > 0:
         try:
             await ctx.bot.send_message(referrer["referred_by"],
-                f"<b>💰 Referral Commission Earned!</b>\n\nYou earned <b>${commission:.2f}</b>!", parse_mode="HTML")
+                f"<b>💰 Referral Commission Earned!</b>\n\nYou earned <b>{fmt(commission)}</b>!", parse_mode="HTML")
         except Exception:
             pass
     await query.answer("✅ Approved!")
@@ -622,15 +634,15 @@ async def dep_reject_cb(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         parse_mode="HTML")
     await ctx.bot.send_message(dep["user_id"],
         f"<b>❌ Deposit Rejected</b>\n\n"
-        f"Your deposit of <b>${dep['amount']:.2f}</b> (ID: <code>{dep_id}</code>) was not approved.\n"
+        f"Your deposit of <b>{fmt(dep['amount'])}</b> (ID: <code>{dep_id}</code>) was not approved.\n"
         f"Contact <b>🆘 Support</b> if this is an error.",
         parse_mode="HTML", reply_markup=main_menu_keyboard())
-    await send_to_channel(ctx.bot, FUNDS_CHANNEL,
+    await send_to_channel(ctx.bot, TRADES_CHANNEL,
         f"❌ <b>DEPOSIT REJECTED</b>\n"
         f"━━━━━━━━━━━━━━━━━━━━━━\n"
         f"🆔 Deposit ID: <code>{dep_id}</code>\n"
         f"🆔 User ID: <code>{dep['user_id']}</code>\n"
-        f"💵 Amount: <b>${dep['amount']:.2f}</b>\n"
+        f"💵 Amount: <b>{fmt(dep['amount'])}</b>\n"
         f"📊 Status: <b>❌ Rejected</b>")
     await query.answer("❌ Rejected.")
 
@@ -658,18 +670,18 @@ async def admin_approve(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             conn.execute("INSERT INTO referral_earnings (referrer_id,referred_id,deposit_id,commission) VALUES (%s,%s,%s,%s)",
                 (referrer["referred_by"], dep["user_id"], dep_id, commission))
     await update.message.reply_text(
-        f"✅ Deposit #{dep_id} approved! <b>${dep['amount']:.2f}</b> credited."
-        + (f"\n🤝 Referral <b>${commission:.2f}</b> paid." if commission else ""), parse_mode="HTML")
+        f"✅ Deposit #{dep_id} approved! <b>{fmt(dep['amount'])}</b> credited."
+        + (f"\n🤝 Referral <b>{fmt(commission)}</b> paid." if commission else ""), parse_mode="HTML")
     await ctx.bot.send_message(dep["user_id"],
         f"<b>🎉 Deposit Approved!</b>\n\n"
-        f"<b>💵 ${dep['amount']:.2f}</b> added to your wallet.\n"
+        f"<b>💵 {fmt(dep['amount'])}</b> added to your wallet.\n"
         f"<b>🆔 Ref:</b> <code>{dep_id}</code>\n\n"
         f"<b>Start shopping! 🛒</b>",
         parse_mode="HTML", reply_markup=main_menu_keyboard())
     if referrer and referrer["referred_by"] and commission > 0:
         try:
             await ctx.bot.send_message(referrer["referred_by"],
-                f"<b>💰 Referral Commission Earned!</b>\nYou earned <b>${commission:.2f}</b>!", parse_mode="HTML")
+                f"<b>💰 Referral Commission Earned!</b>\nYou earned <b>{fmt(commission)}</b>!", parse_mode="HTML")
         except Exception:
             pass
 
@@ -689,7 +701,7 @@ async def admin_reject(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"❌ Deposit #{dep_id} rejected.")
     await ctx.bot.send_message(dep["user_id"],
         f"<b>❌ Deposit Rejected</b>\n\n"
-        f"Your deposit of <b>${dep['amount']:.2f}</b> (ID: <code>{dep_id}</code>) was not approved.\n"
+        f"Your deposit of <b>{fmt(dep['amount'])}</b> (ID: <code>{dep_id}</code>) was not approved.\n"
         f"Contact <b>🆘 Support</b> if this is an error.",
         parse_mode="HTML", reply_markup=main_menu_keyboard())
 
@@ -710,10 +722,10 @@ async def admin_credit(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     with get_db() as conn:
         conn.execute("UPDATE users SET balance=balance+%s WHERE user_id=%s", (amount, user_id))
         new_bal = float(conn.execute("SELECT balance FROM users WHERE user_id=%s", (user_id,)).fetchone()["balance"])
-    await update.message.reply_text(f"✅ <b>${amount:.2f} credited to <code>{user_id}</code></b>\nNew balance: <b>${new_bal:.2f}</b>", parse_mode="HTML")
+    await update.message.reply_text(f"✅ <b>{fmt(amount)} credited to <code>{user_id}</code></b>\nNew balance: <b>{fmt(new_bal)}</b>", parse_mode="HTML")
     try:
         await ctx.bot.send_message(user_id,
-            f"<b>🎉 ${amount:.2f} added to your balance by admin!</b>\n\nNew balance: <b>${new_bal:.2f}</b>\n\n<b>Start shopping! 🛒</b>",
+            f"<b>🎉 {fmt(amount)} added to your balance by admin!</b>\n\nNew balance: <b>{fmt(new_bal)}</b>\n\n<b>Start shopping! 🛒</b>",
             parse_mode="HTML", reply_markup=main_menu_keyboard())
     except Exception:
         await update.message.reply_text("⚠️ Credited but could not notify user.")
@@ -736,7 +748,7 @@ async def admin_deduct(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ User not found or insufficient balance."); return
         conn.execute("UPDATE users SET balance=balance-%s WHERE user_id=%s", (amount, user_id))
         new_bal = float(conn.execute("SELECT balance FROM users WHERE user_id=%s", (user_id,)).fetchone()["balance"])
-    await update.message.reply_text(f"✅ <b>${amount:.2f} deducted from <code>{user_id}</code></b>\nNew balance: <b>${new_bal:.2f}</b>", parse_mode="HTML")
+    await update.message.reply_text(f"✅ <b>{fmt(amount)} deducted from <code>{user_id}</code></b>\nNew balance: <b>{fmt(new_bal)}</b>", parse_mode="HTML")
 
 
 # ── Admin: login via OTP ──────────────────────────────────────────────────────
@@ -851,7 +863,7 @@ async def set_price(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             (ctx.user_data["session"], ctx.user_data.get("phone", ""), price)
         ).fetchone()["id"]
     await update.message.reply_text(
-        f"<b>🎉 Account #{acc_id} Added!</b>\n\n<b>💵 Price: ${price:.2f}</b>\n🟢 <b>Now visible in the marketplace.</b>",
+        f"<b>🎉 Account #{acc_id} Added!</b>\n\n<b>💵 Price: {fmt(price)}</b>\n🟢 <b>Now visible in the marketplace.</b>",
         parse_mode="HTML")
     # Post to trades channel
     phone_raw = ctx.user_data.get("phone", "")
@@ -862,7 +874,7 @@ async def set_price(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f"🆔 Account ID: <code>#{acc_id}</code>\n"
         f"🌍 Country {flag} {country_name}\n"
         f"📱 Phone: <code>{mask_phone(phone_raw)}</code>\n"
-        f"💵 Price: <b>${price:.2f}</b>\n"
+        f"💵 Price: <b>{fmt(price)}</b>\n"
         f"📊 Stock: 1\n"
         f"📊 Status: 🟢 Available\n"
         f"━━━━━━━━━━━━━━━━━━━\n"
@@ -881,7 +893,7 @@ async def admin_accounts(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     icons = {"available": "🟢", "sold": "✅", "pending_review": "🔄"}
     lines = [f"<b>📦 All Accounts ({len(rows)})</b>\n<b>▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰</b>"]
     for r in rows:
-        lines.append(f"{icons.get(r['status'],'⚪')} <b>#{r['id']}</b> — <b>${r['price']:.2f}</b> ({r['status']})"
+        lines.append(f"{icons.get(r['status'],'⚪')} <b>#{r['id']}</b> — <b>{fmt(r['price'])}</b> ({r['status']})"
             + (f" → <code>{r['buyer_id']}</code>" if r["buyer_id"] else ""))
     await update.message.reply_text("\n".join(lines), parse_mode="HTML")
 
@@ -946,7 +958,7 @@ async def admin_users(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f"  ✅ Approved Deposits:  <b>{dep_count}</b>\n"
         f"  🛒 Accounts Sold:      <b>{sell_count}</b>\n"
         f"  💸 Withdrawals Paid:   <b>{wd_count}</b>\n"
-        f"  🏦 Total Wallet Funds: <b>${float(total_bal):.2f}</b>\n\n"
+        f"  🏦 Total Wallet Funds: <b>{fmt(float(total_bal))}</b>\n\n"
         f"<b>▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰</b>",
         parse_mode="HTML"
     )
@@ -962,7 +974,7 @@ async def admin_pending(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("✅ No pending deposits."); return
     lines = [f"<b>📥 Pending Deposits ({len(deps)})</b>\n<b>▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰</b>"]
     for d in deps:
-        lines.append(f"<b>🆔</b> <code>{d['id']}</code> — @{d['username'] or d['user_id']} — <b>${d['amount']:.2f}</b>\n"
+        lines.append(f"<b>🆔</b> <code>{d['id']}</code> — @{d['username'] or d['user_id']} — <b>{fmt(d['amount'])}</b>\n"
             f"   ✅ /approve_{d['id']}   ❌ /reject_{d['id']}")
     await update.message.reply_text("\n".join(lines), parse_mode="HTML")
 
@@ -1008,7 +1020,7 @@ async def admin_add_sell(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             (price, acc_id)
         )
     await update.message.reply_text(
-        f"✅ Account #{acc_id} listed at <b>${price:.2f}</b> — now visible in marketplace.",
+        f"✅ Account #{acc_id} listed at <b>{fmt(price)}</b> — now visible in marketplace.",
         parse_mode="HTML"
     )
 
@@ -1238,7 +1250,7 @@ async def buy_country(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     buttons = []
     for a in accs:
         buttons.append([InlineKeyboardButton(
-            f"🔑 Account #{a['id']}  —  ${a['price']:.2f}",
+            f"🔑 Account #{a['id']}  —  {fmt(a['price'])}",
             callback_data=f"view_{a['id']}"
         )])
     buttons.append([InlineKeyboardButton("🔙 Back", callback_data="menu_buy")])
@@ -1269,9 +1281,9 @@ async def view_account(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f"<b>🔑 ACCOUNT DETAILS</b>\n"
         f"<b>▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰</b>\n\n"
         f"<b>🆔 Account ID:  #{acc['id']}</b>\n"
-        f"<b>💵 Price:       ${acc['price']:.2f}</b>\n\n"
+        f"<b>💵 Price:       {fmt(acc['price'])}</b>\n\n"
         f"<b>▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰</b>\n"
-        f"<b>💼 Your Balance: ${balance:.2f}</b>\n"
+        f"<b>💼 Your Balance: {fmt(balance)}</b>\n"
         f"{'<b>✅ You have enough funds.</b>' if has_funds else '<b>❌ Insufficient balance — deposit first.</b>'}\n"
         f"<b>▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰</b>",
         parse_mode="HTML",
@@ -1297,8 +1309,8 @@ async def confirm_buy(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if balance < float(acc["price"]):
             await query.edit_message_text(
                 f"<b>❌ Insufficient Balance</b>\n\n"
-                f"<b>💼 Your balance: ${balance:.2f}</b>\n"
-                f"<b>💵 Required:     ${acc['price']:.2f}</b>",
+                f"<b>💼 Your balance: {fmt(balance)}</b>\n"
+                f"<b>💵 Required:     {fmt(acc['price'])}</b>",
                 parse_mode="HTML",
                 reply_markup=InlineKeyboardMarkup([
                     [InlineKeyboardButton("💰  Deposit Now", callback_data="menu_deposit")],
@@ -1318,7 +1330,7 @@ async def confirm_buy(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await query.edit_message_text(
         f"<b>🎉 Purchase Successful!</b>\n\n"
         f"<b>🔑 Account #{acc_id} is yours!</b>\n"
-        f"<b>💵 Paid: ${acc['price']:.2f}</b>\n\n"
+        f"<b>💵 Paid: {fmt(acc['price'])}</b>\n\n"
         f"<b>▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰</b>\n"
         f"⏳ <b>Sending login details...</b>\n"
         f"<b>▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰</b>",
@@ -1367,7 +1379,7 @@ async def confirm_buy(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await ctx.bot.send_message(
         ADMIN_ID,
         f"<b>💸 Account Sold</b>\n\n"
-        f"<b>🔑 Account #{acc_id}</b> sold to <code>{user_id}</code> for <b>${acc['price']:.2f}</b>.\n"
+        f"<b>🔑 Account #{acc_id}</b> sold to <code>{user_id}</code> for <b>{fmt(acc['price'])}</b>.\n"
         f"<b>📱 Phone:</b> <code>{phone}</code>",
         parse_mode="HTML"
     )
@@ -1383,7 +1395,7 @@ async def confirm_buy(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f"🆔 Account ID: <code>#{acc_id}</code>\n"
         f"🌍 Country {flag} {country_name}\n"
         f"📱 Phone: <code>{mask_phone(phone)}</code>\n"
-        f"💵 Price: <b>${acc['price']:.2f}</b>\n"
+        f"💵 Price: <b>{fmt(acc['price'])}</b>\n"
         f"👤 Buyer: <code>{user_id}</code>\n"
         f"📊 Status: ✅ Sold\n"
         f"━━━━━━━━━━━━━━━━━━━\n"
@@ -1870,7 +1882,7 @@ async def sell_approve_price(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data.pop("sell_approve_acc_id", None)
     flag, country_name = phone_to_country(acc["phone"] or "")
     await update.message.reply_text(
-        f"✅ Account <code>#{acc_id}</code> approved and listed at <b>${price:.2f}</b>",
+        f"✅ Account <code>#{acc_id}</code> approved and listed at <b>{fmt(price)}</b>",
         parse_mode="HTML"
     )
     await send_to_channel(ctx.bot, TRADES_CHANNEL,
@@ -1879,7 +1891,7 @@ async def sell_approve_price(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f"🆔 Account ID: <code>#{acc_id}</code>\n"
         f"🌍 Country: {flag} {country_name}\n"
         f"📱 Phone: <code>{mask_phone(acc['phone'] or '')}</code>\n"
-        f"💵 Price: <b>${price:.2f}</b>\n"
+        f"💵 Price: <b>{fmt(price)}</b>\n"
         f"📊 Status: 🟢 Available\n"
         f"━━━━━━━━━━━━━━━━━━━━━━"
     )
@@ -1939,10 +1951,10 @@ async def show_balance(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f"<b>📊 MY WALLET</b>\n"
         f"<b>▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰</b>\n\n"
         f"<b>💼 Available Balance</b>\n"
-        f"<b>💲 ${get_balance(user.id):.2f} USD</b>\n\n"
+        f"<b>💲 {fmt(get_balance(user.id))} USD</b>\n\n"
         f"<b>▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰</b>\n"
         f"<b>👥 Referrals:</b>       <b>{get_referral_count(user.id)}</b>\n"
-        f"<b>🤝 Referral Earned:</b> <b>${get_referral_earnings(user.id):.2f}</b>\n"
+        f"<b>🤝 Referral Earned:</b> <b>{fmt(get_referral_earnings(user.id))}</b>\n"
         f"<b>▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰</b>",
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup([
@@ -1962,7 +1974,7 @@ async def refer_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f"<b>▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰</b>\n"
         f"<b>📊 Your Stats</b>\n"
         f"<b>👥 Total Referrals:</b> <b>{get_referral_count(user.id)}</b>\n"
-        f"<b>💰 Total Earned:</b>    <b>${get_referral_earnings(user.id):.2f}</b>\n"
+        f"<b>💰 Total Earned:</b>    <b>{fmt(get_referral_earnings(user.id))}</b>\n"
         f"<b>▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰</b>\n\n"
         f"<b>🔗 Your Referral Link:</b>\n<code>{ref_link}</code>\n\n"
         f"📤 <b>Share this link. When they deposit, you get 2% instantly!</b>",
@@ -2033,7 +2045,7 @@ async def my_orders(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         except Exception:
             date_str = "—"
         try:
-            price_str = f"${float(o['price']):.2f}"
+            price_str = f"{fmt(float(o['price']))}"
         except Exception:
             price_str = "—"
         lines.append(
@@ -2067,7 +2079,7 @@ async def withdraw_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await query.edit_message_text(
         f"<b>💸 WITHDRAW</b>\n"
         f"<b>▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰</b>\n\n"
-        f"<b>💰 Your Balance: ${balance:.2f}</b>\n\n"
+        f"<b>💰 Your Balance: {fmt(balance)}</b>\n\n"
         f"<b>▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰</b>\n"
         f"<b>📲 Step 1 of 2</b>\n\n"
         f"Send your <b>UPI ID</b> or a <b>QR code photo</b> to receive payment.\n\n"
@@ -2105,7 +2117,7 @@ async def withdraw_upi(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f"<b>✅ Payment details received:</b> {upi_display}\n\n"
         f"<b>▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰</b>\n"
         f"<b>💰 Step 2 of 2</b>\n\n"
-        f"<b>Your current balance: ${balance:.2f}</b>\n\n"
+        f"<b>Your current balance: {fmt(balance)}</b>\n\n"
         f"How much do you want to withdraw?\n"
         f"📌 <b>Example:</b> <code>10</code>\n\n"
         f"<b>▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰</b>\n"
@@ -2130,9 +2142,9 @@ async def withdraw_amount(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if balance < amount:
         await update.message.reply_text(
             f"<b>❌ Insufficient Balance</b>\n\n"
-            f"<b>💰 Your balance: ${balance:.2f}</b>\n"
-            f"<b>💸 Requested:    ${amount:.2f}</b>\n\n"
-            f"You can only withdraw up to <b>${balance:.2f}</b>.\n"
+            f"<b>💰 Your balance: {fmt(balance)}</b>\n"
+            f"<b>💸 Requested:    {fmt(amount)}</b>\n\n"
+            f"You can only withdraw up to <b>{fmt(balance)}</b>.\n"
             f"Please enter a lower amount:",
             parse_mode="HTML")
         return WITHDRAW_AMOUNT
@@ -2155,9 +2167,9 @@ async def withdraw_amount(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(
         f"<b>✅ Withdrawal Request Submitted!</b>\n\n"
-        f"<b>💸 Amount: ${amount:.2f}</b>\n"
+        f"<b>💸 Amount: {fmt(amount)}</b>\n"
         f"<b>🆔 Reference ID:</b> <code>{wd_id}</code>\n"
-        f"<b>💰 Remaining Balance: ${new_balance:.2f}</b>\n\n"
+        f"<b>💰 Remaining Balance: {fmt(new_balance)}</b>\n\n"
         f"⏳ <b>Admin will review and process your withdrawal shortly.</b>",
         parse_mode="HTML",
         reply_markup=main_menu_keyboard())
@@ -2177,7 +2189,7 @@ async def withdraw_amount(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f"<b>💸 NEW WITHDRAWAL REQUEST</b>\n"
         f"<b>▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰</b>\n"
         f"<b>👤 User:</b> @{user.username or user.first_name} (<code>{user.id}</code>)\n"
-        f"<b>💵 Amount: ${amount:.2f}</b>\n"
+        f"<b>💵 Amount: {fmt(amount)}</b>\n"
         f"{upi_line}\n"
         f"<b>🆔 Withdrawal ID:</b> <code>{wd_id}</code>\n"
         f"<b>▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰</b>"
@@ -2188,7 +2200,7 @@ async def withdraw_amount(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f"<b>💸 WITHDRAWAL REQUEST</b>\n"
         f"<b>▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰</b>\n"
         f"<b>🆔 User ID:</b> <code>{user.id}</code>\n"
-        f"<b>💵 Amount: ${amount:.2f}</b>\n"
+        f"<b>💵 Amount: {fmt(amount)}</b>\n"
         f"<b>🔖 Withdrawal ID:</b> <code>{wd_id}</code>\n"
         f"<b>📊 Status: ⏳ Pending</b>"
     )
@@ -2199,7 +2211,7 @@ async def withdraw_amount(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     else:
         await ctx.bot.send_message(ADMIN_ID, admin_text, parse_mode="HTML", reply_markup=wd_kb)
 
-    await send_to_channel(ctx.bot, FUNDS_CHANNEL, channel_text)
+    await send_to_channel(ctx.bot, TRADES_CHANNEL, channel_text)
     return ConversationHandler.END
 
 async def wd_approve(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -2231,34 +2243,34 @@ async def wd_approve(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     if update.callback_query:
         await update.callback_query.edit_message_caption(
-            caption=f"<b>✅ Withdrawal #{wd_id} — APPROVED</b>\n<b>💵 ${wd['amount']:.2f}</b> paid to <code>{wd['user_id']}</code>",
+            caption=f"<b>✅ Withdrawal #{wd_id} — APPROVED</b>\n<b>💵 {fmt(wd['amount'])}</b> paid to <code>{wd['user_id']}</code>",
             parse_mode="HTML") if update.callback_query.message.caption else None
         try:
             await update.callback_query.edit_message_text(
-                f"<b>✅ Withdrawal #{wd_id} — APPROVED</b>\n<b>💵 ${wd['amount']:.2f}</b> paid to <code>{wd['user_id']}</code>",
+                f"<b>✅ Withdrawal #{wd_id} — APPROVED</b>\n<b>💵 {fmt(wd['amount'])}</b> paid to <code>{wd['user_id']}</code>",
                 parse_mode="HTML")
         except Exception:
             pass
         await update.callback_query.answer("✅ Approved!")
     else:
         await update.message.reply_text(
-            f"✅ Withdrawal #{wd_id} approved! <b>${wd['amount']:.2f}</b> paid to <code>{wd['user_id']}</code>.",
+            f"✅ Withdrawal #{wd_id} approved! <b>{fmt(wd['amount'])}</b> paid to <code>{wd['user_id']}</code>.",
             parse_mode="HTML")
 
     await ctx.bot.send_message(
         wd["user_id"],
         f"<b>🎉 Withdrawal Approved!</b>\n\n"
-        f"<b>💸 ${wd['amount']:.2f}</b> has been processed.\n"
+        f"<b>💸 {fmt(wd['amount'])}</b> has been processed.\n"
         f"<b>🆔 Ref:</b> <code>{wd_id}</code>\n\n"
         f"<b>Thank you for using TG Market! 🛒</b>",
         parse_mode="HTML",
         reply_markup=main_menu_keyboard())
-    await send_to_channel(ctx.bot, FUNDS_CHANNEL,
+    await send_to_channel(ctx.bot, TRADES_CHANNEL,
         f"✅ <b>WITHDRAWAL APPROVED</b>\n"
         f"━━━━━━━━━━━━━━━━━━━\n"
         f"🆔 Withdrawal ID: <code>{wd_id}</code>\n"
         f"🆔 User ID: <code>{wd['user_id']}</code>\n"
-        f"💵 Amount: <b>${wd['amount']:.2f}</b>\n"
+        f"💵 Amount: <b>{fmt(wd['amount'])}</b>\n"
         f"📊 Status: <b>✅ Approved & Paid</b>\n"
         f"━━━━━━━━━━━━━━━━━━\n"
         f"🤖 @OtpSellerStore_Bot"
@@ -2297,23 +2309,23 @@ async def wd_reject(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await update.callback_query.answer("❌ Rejected.")
     else:
         await update.message.reply_text(
-            f"❌ Withdrawal #{wd_id} rejected. <b>${wd['amount']:.2f}</b> refunded.",
+            f"❌ Withdrawal #{wd_id} rejected. <b>{fmt(wd['amount'])}</b> refunded.",
             parse_mode="HTML")
 
     await ctx.bot.send_message(
         wd["user_id"],
         f"<b>❌ Withdrawal Rejected</b>\n\n"
-        f"Your withdrawal of <b>${wd['amount']:.2f}</b> (ID: <code>{wd_id}</code>) was not approved.\n"
-        f"<b>💰 ${wd['amount']:.2f}</b> has been refunded to your balance.\n\n"
+        f"Your withdrawal of <b>{fmt(wd['amount'])}</b> (ID: <code>{wd_id}</code>) was not approved.\n"
+        f"<b>💰 {fmt(wd['amount'])}</b> has been refunded to your balance.\n\n"
         f"Contact <b>🆘 Support</b> if this is an error.",
         parse_mode="HTML",
         reply_markup=main_menu_keyboard())
-    await send_to_channel(ctx.bot, FUNDS_CHANNEL,
+    await send_to_channel(ctx.bot, TRADES_CHANNEL,
         f"❌ <b>WITHDRAWAL REJECTED</b>\n"
         f"━━━━━━━━━━━━━━━━━━━━━━\n"
         f"🆔 Withdrawal ID: <code>{wd_id}</code>\n"
         f"🆔 User ID: <code>{wd['user_id']}</code>\n"
-        f"💵 Amount: <b>${wd['amount']:.2f}</b>\n"
+        f"💵 Amount: <b>{fmt(wd['amount'])}</b>\n"
         f"📊 Status: <b>❌ Rejected — Refunded</b>"
     )
 
@@ -2338,22 +2350,35 @@ async def admin_getfileid(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 # ── Admin: Broadcast ─────────────────────────────────────────────────────────
 async def admin_broadcast(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Send a message to all bot users.
-    Usage: /broadcast Your message here
+    Usage: /broadcast Your message here (multiline supported)
     Supports HTML formatting. The message is sent with a 🛒 Buy Now button.
     """
     if update.effective_user.id != ADMIN_ID:
         return
 
-    text = " ".join(ctx.args).strip() if ctx.args else ""
+    # Use raw message text so newlines and formatting are preserved exactly.
+    # Strip the /broadcast command prefix (handles /broadcast and /broadcast@botname).
+    raw = update.message.text or ""
+    # Find where the command ends (first whitespace after the command word)
+    if " " in raw or "\n" in raw:
+        # Split on the first whitespace character (space or newline)
+        import re as _re
+        match = _re.match(r"^/\S+\s+(.*)", raw, _re.DOTALL)
+        text = match.group(1).strip() if match else ""
+    else:
+        text = ""
+
     if not text:
         await update.message.reply_text(
             "<b>📢 Broadcast Usage:</b>\n\n"
             "<code>/broadcast Your message here</code>\n\n"
-            "You can use HTML formatting:\n"
-            "<code>&lt;b&gt;bold&lt;/b&gt;</code>, <code>&lt;i&gt;italic&lt;/i&gt;</code>, "
-            "<code>&lt;code&gt;mono&lt;/code&gt;</code>\n\n"
+            "Newlines and formatting are preserved exactly as you type.\n\n"
             "<b>Example:</b>\n"
-            "<code>/broadcast 🔥 New accounts added!\n\n🇮🇳 India — $2.00\n🇵🇰 Pakistan — $1.50\n\nBuy now! 🛒</code>",
+            "<code>/broadcast ✅ NEW ACCOUNTS ADDED!\n"
+            "━━━━━━━━━━━━━━━━━━\n"
+            "� India — $2.00\n"
+            "� Pakistan — $1.50\n\n"
+            "Purchase now‼️</code>",
             parse_mode="HTML")
         return
 
