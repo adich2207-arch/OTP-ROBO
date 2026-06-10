@@ -888,12 +888,68 @@ async def admin_accounts(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def admin_users(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return
-    with get_db() as conn:
-        users = conn.execute("SELECT * FROM users ORDER BY created_at DESC").fetchall()
-    lines = [f"<b>👥 All Users ({len(users)})</b>\n<b>▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰</b>"]
+
+    await update.message.reply_text("⏳ Fetching stats, checking reachable users...")
+
+    try:
+        with get_db() as conn:
+            users      = conn.execute("SELECT user_id, username, balance, created_at FROM users").fetchall()
+            dep_count  = conn.execute("SELECT COUNT(*) AS c FROM deposits WHERE status='approved'").fetchone()["c"]
+            sell_count = conn.execute("SELECT COUNT(*) AS c FROM accounts WHERE status='sold'").fetchone()["c"]
+            wd_count   = conn.execute("SELECT COUNT(*) AS c FROM withdrawals WHERE status='approved'").fetchone()["c"]
+            total_bal  = conn.execute("SELECT COALESCE(SUM(balance),0) AS s FROM users").fetchone()["s"]
+    except Exception as e:
+        logger.error(f"admin_users DB error: {e}")
+        await update.message.reply_text("❌ Could not fetch stats from database.")
+        return
+
+    total  = len(users)
+    funded = sum(1 for u in users if float(u["balance"]) > 0)
+
+    from datetime import datetime, timezone, timedelta
+    week_ago = datetime.now(timezone.utc) - timedelta(days=7)
+    new_7d   = 0
     for u in users:
-        lines.append(f"• @{u['username'] or 'N/A'} (<code>{u['user_id']}</code>) — <b>${u['balance']:.2f}</b>")
-    await update.message.reply_text("\n".join(lines), parse_mode="HTML")
+        try:
+            ts = u["created_at"]
+            if ts is None:
+                continue
+            # make timezone-aware if naive
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=timezone.utc)
+            if ts >= week_ago:
+                new_7d += 1
+        except Exception:
+            pass
+
+    # Check who blocked the bot by sending a typing action to each user
+    blocked   = 0
+    reachable = 0
+    for u in users:
+        try:
+            await ctx.bot.send_chat_action(u["user_id"], action="typing")
+            reachable += 1
+        except Exception:
+            blocked += 1
+
+    await update.message.reply_text(
+        f"<b>👥 USER STATISTICS</b>\n"
+        f"<b>▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰</b>\n\n"
+        f"<b>📊 User Overview</b>\n"
+        f"  👤 Total Users:        <b>{total}</b>\n"
+        f"  ✅ Reachable (Active): <b>{reachable}</b>\n"
+        f"  🚫 Blocked the Bot:    <b>{blocked}</b>\n"
+        f"  💰 Users with Balance: <b>{funded}</b>\n"
+        f"  🆕 Joined (Last 7d):   <b>{new_7d}</b>\n\n"
+        f"<b>▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰</b>\n"
+        f"<b>💹 Platform Activity</b>\n"
+        f"  ✅ Approved Deposits:  <b>{dep_count}</b>\n"
+        f"  🛒 Accounts Sold:      <b>{sell_count}</b>\n"
+        f"  💸 Withdrawals Paid:   <b>{wd_count}</b>\n"
+        f"  🏦 Total Wallet Funds: <b>${float(total_bal):.2f}</b>\n\n"
+        f"<b>▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰</b>",
+        parse_mode="HTML"
+    )
 
 async def admin_pending(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
@@ -1918,15 +1974,26 @@ async def my_orders(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     user_id = query.from_user.id
 
-    with get_db() as conn:
-        orders = conn.execute(
-            """SELECT a.id, a.phone, a.price, a.created_at
-               FROM accounts a
-               WHERE a.buyer_id = %s
-               ORDER BY a.created_at DESC
-               LIMIT 20""",
-            (user_id,)
-        ).fetchall()
+    try:
+        with get_db() as conn:
+            orders = conn.execute(
+                """SELECT a.id, a.phone, a.price, a.created_at
+                   FROM accounts a
+                   WHERE a.buyer_id = %s
+                   ORDER BY a.created_at DESC
+                   LIMIT 20""",
+                (user_id,)
+            ).fetchall()
+            # Fetch country dial codes once for all lookups below
+            dial_rows = conn.execute(
+                "SELECT country_code, country_name, dial_code FROM country_prices ORDER BY LENGTH(dial_code) DESC"
+            ).fetchall()
+    except Exception as e:
+        logger.error(f"my_orders DB error: {e}")
+        await query.edit_message_text(
+            "❌ Could not load orders. Please try again.",
+            reply_markup=back_keyboard())
+        return
 
     if not orders:
         await query.edit_message_text(
@@ -1941,27 +2008,54 @@ async def my_orders(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             ]))
         return
 
+    def _country_from_phone(phone: str) -> tuple:
+        """Resolve country using already-fetched dial_rows, then built-in map."""
+        try:
+            p = (phone or "").strip().lstrip("+")
+            for r in dial_rows:
+                if r["dial_code"] and p.startswith(r["dial_code"]):
+                    return country_flag(r["country_code"]), r["country_name"]
+            for dial, code, name in _BUILTIN_DIAL_MAP:
+                if p.startswith(dial):
+                    return country_flag(code), name
+        except Exception:
+            pass
+        return "🌍", "Unknown"
+
     lines = [
         "<b>📦 MY ORDERS</b>",
         "<b>▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰</b>\n",
     ]
     for i, o in enumerate(orders, start=1):
-        flag, country_name = phone_to_country(o["phone"] or "")
-        date_str = o["created_at"].strftime("%d %b %Y") if o["created_at"] else "—"
+        flag, country_name = _country_from_phone(o["phone"] or "")
+        try:
+            date_str = o["created_at"].strftime("%d %b %Y") if o["created_at"] else "—"
+        except Exception:
+            date_str = "—"
+        try:
+            price_str = f"${float(o['price']):.2f}"
+        except Exception:
+            price_str = "—"
         lines.append(
             f"<b>{i}.</b> 🔑 <b>Account #{o['id']}</b>\n"
-            f"   {flag} {country_name}  •  📱 <code>{mask_phone(o['phone'] or '')}</code>\n"
-            f"   💵 <b>${o['price']:.2f}</b>  •  🗓 {date_str}\n"
+            f"   {flag} {country_name}\n"
+            f"   📱 <code>{mask_phone(o['phone'] or '')}</code>\n"
+            f"   💵 <b>{price_str}</b>  •  🗓 {date_str}\n"
         )
 
     lines.append("<b>▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰</b>")
     lines.append(f"<b>Total purchases: {len(orders)}</b>")
 
+    # Trim to Telegram's 4096 char limit just in case
+    text = "\n".join(lines)
+    if len(text) > 4000:
+        text = text[:4000] + "\n\n<i>... (showing latest entries)</i>"
+
     await query.edit_message_text(
-        "\n".join(lines),
+        text,
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("🛒  Buy More", callback_data="menu_buy")],
+            [InlineKeyboardButton("🛒  Buy More",     callback_data="menu_buy")],
             [InlineKeyboardButton("🔙  Back to Menu", callback_data="menu_back")]
         ]))
 
