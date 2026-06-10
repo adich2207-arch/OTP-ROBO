@@ -45,6 +45,10 @@ FORCE_GROUP         = os.getenv("FORCE_GROUP",          "0")
 FORCE_CHANNEL_1_URL = os.getenv("FORCE_CHANNEL_1_URL", "https://t.me/yourchannel1")
 FORCE_CHANNEL_2_URL = os.getenv("FORCE_CHANNEL_2_URL", "https://t.me/yourchannel2")
 FORCE_GROUP_URL     = os.getenv("FORCE_GROUP_URL",      "https://t.me/yourgroup")
+# Optional custom display names for force-join buttons (overrides live title fetch)
+FORCE_CHANNEL_1_NAME = os.getenv("FORCE_CHANNEL_1_NAME", "")
+FORCE_CHANNEL_2_NAME = os.getenv("FORCE_CHANNEL_2_NAME", "")
+FORCE_GROUP_NAME     = os.getenv("FORCE_GROUP_NAME",     "Otp Seller Group")
 
 def _fc(val: str):
     """Convert a force-channel env value to int (if numeric) or str (@username). Returns None if disabled."""
@@ -73,20 +77,25 @@ async def check_force_join(bot, user_id: int) -> list:
     """Return a list of (channel_id_or_username, invite_url, channel_title) for channels/groups the user has NOT joined."""
     not_joined = []
     pairs = [
-        (_fc(FORCE_CHANNEL_1), FORCE_CHANNEL_1_URL),
-        (_fc(FORCE_CHANNEL_2), FORCE_CHANNEL_2_URL),
-        (_fc(FORCE_GROUP),     FORCE_GROUP_URL),
+        (_fc(FORCE_CHANNEL_1), FORCE_CHANNEL_1_URL, FORCE_CHANNEL_1_NAME),
+        (_fc(FORCE_CHANNEL_2), FORCE_CHANNEL_2_URL, FORCE_CHANNEL_2_NAME),
+        (_fc(FORCE_GROUP),     FORCE_GROUP_URL,     FORCE_GROUP_NAME),
     ]
-    for channel, url in pairs:
+    for channel, url, custom_name in pairs:
         if not channel:
             continue  # slot disabled
-        # Fetch channel/group title for the button label
-        try:
-            chat = await bot.get_chat(channel)
-            title = chat.title or str(channel)
-        except Exception as e:
-            logger.warning(f"[ForceJoin] get_chat({channel}) failed: {e}")
-            title = str(channel)
+
+        # Use custom name if set, otherwise fetch live from Telegram
+        if custom_name:
+            title = custom_name
+        else:
+            try:
+                chat = await bot.get_chat(channel)
+                title = chat.title or str(channel)
+            except Exception as e:
+                logger.warning(f"[ForceJoin] get_chat({channel}) failed: {e}")
+                title = str(channel)
+
         try:
             member = await bot.get_chat_member(channel, user_id)
             logger.info(f"[ForceJoin] user={user_id} channel={channel} status={member.status}")
@@ -112,7 +121,7 @@ def b(text: str) -> str:
 
 # ── Currency formatter ────────────────────────────────────────────────────────
 # USD to INR conversion rate — update this value to adjust the displayed INR amount.
-USD_TO_INR = float(os.getenv("USD_TO_INR", "83.5"))
+USD_TO_INR = float(os.getenv("USD_TO_INR", "90.0"))
 
 def fmt(usd: float) -> str:
     """Format a USD amount as  ₹{inr} ($x.xx)  e.g. ₹417 ($5.00)"""
@@ -462,8 +471,8 @@ async def deposit_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await query.edit_message_text(
         f"<b>💵 RECHARGE WALLET</b>\n"
         f"<b>▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰</b>\n\n"
-        f"Enter the amount in <b>INR</b> you want to deposit.\n\n"
-        f"📌 <b>Example:</b> <code>50</code>\n\n"
+        f"Enter the amount in <b>₹ INR</b> you want to deposit.\n\n"
+        f"📌 <b>Example:</b> <code>500</code>\n\n"
         f"<b>▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰</b>\n"
         f"✏️ <b>Type the amount below</b> or /cancel to go back:",
         parse_mode="HTML")
@@ -474,19 +483,22 @@ async def deposit_amount(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     ensure_user(user.id, user.username or "")
     try:
-        amount = float(update.message.text.strip())
-        if amount <= 0:
+        amount_inr = float(update.message.text.strip())
+        if amount_inr <= 0:
             raise ValueError
     except ValueError:
         await update.message.reply_text(
-            "<b>❌ Invalid amount.</b> Enter a positive number like <code>25</code>.",
+            "<b>❌ Invalid amount.</b> Enter a positive number in ₹ like <code>500</code>.",
             parse_mode="HTML")
         return DEPOSIT_AMOUNT
 
-    ctx.user_data["dep_amount"] = amount
+    # Convert INR → USD for internal storage (DB always stores USD)
+    amount_usd = round(amount_inr / USD_TO_INR, 2)
+    ctx.user_data["dep_amount"]     = amount_usd   # stored in DB as USD
+    ctx.user_data["dep_amount_inr"] = amount_inr   # shown to user as INR
 
     msg = (
-        f"<b>💵 Amount to Pay: {fmt(amount)}</b>\n\n"
+        f"<b>💵 Amount to Pay: ₹{amount_inr:.0f} (${amount_usd:.2f})</b>\n\n"
         f"<b>▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰</b>\n"
         f"<b>📲 Pay via UPI:</b>\n"
         f"<code>{PAYMENT_UPI}</code>\n\n"
@@ -515,8 +527,9 @@ async def deposit_amount(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def deposit_screenshot(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Step 3 — Receive screenshot, create deposit record, notify admin with inline buttons."""
-    user   = update.effective_user
-    amount = ctx.user_data.get("dep_amount", 0)
+    user       = update.effective_user
+    amount     = ctx.user_data.get("dep_amount", 0)        # USD (stored in DB)
+    amount_inr = ctx.user_data.get("dep_amount_inr", round(float(amount) * USD_TO_INR))  # INR (shown to user)
 
     if not update.message.photo:
         await update.message.reply_text(
@@ -542,7 +555,7 @@ async def deposit_screenshot(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f"<b>📥 NEW DEPOSIT REQUEST</b>\n"
         f"<b>▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰</b>\n"
         f"<b>👤 User:</b> @{user.username or user.first_name} (<code>{user.id}</code>)\n"
-        f"<b>💵 Amount: {fmt(amount)}</b>\n"
+        f"<b>💵 Amount: ₹{amount_inr:.0f} (${amount:.2f})</b>\n"
         f"<b>🆔 Deposit ID:</b> <code>{dep_id}</code>\n"
         f"<b>▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰</b>\n"
         f"📸 <b>Payment screenshot attached.</b>"
@@ -556,19 +569,19 @@ async def deposit_screenshot(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         parse_mode="HTML",
         reply_markup=admin_kb)
 
-    # Channel gets NO screenshot — just basic info
+    # Channel notification
     await send_to_channel(ctx.bot, TRADES_CHANNEL,
         f"📥 <b>DEPOSIT REQUEST</b>\n"
         f"━━━━━━━━━━━━━━━━━━━━━━\n"
         f"🆔 User ID: <code>{user.id}</code>\n"
-        f"💵 Amount: <b>{fmt(amount)}</b>\n"
+        f"💵 Amount: <b>₹{amount_inr:.0f} (${amount:.2f})</b>\n"
         f"🔖 Deposit ID: <code>{dep_id}</code>\n"
         f"📊 Status: <b>⏳ Pending</b>"
     )
 
     await update.message.reply_text(
         f"<b>✅ Screenshot Received!</b>\n\n"
-        f"<b>💵 Amount: {fmt(amount)}</b>\n"
+        f"<b>💵 Amount: ₹{amount_inr:.0f} (${amount:.2f})</b>\n"
         f"<b>🆔 Reference ID:</b> <code>{dep_id}</code>\n\n"
         f"⏳ <b>Admin will verify your payment and credit your balance shortly.</b>",
         parse_mode="HTML",
@@ -2095,8 +2108,7 @@ async def withdraw_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f"<b>📲 Step 1 of 2</b>\n\n"
         f"Send your <b>UPI ID</b> or a <b>QR code photo</b> to receive payment.\n\n"
         f"📌 <b>UPI example:</b> <code>yourname@upi</code>\n"
-        f"📌 Or send a QR code image\n\n"
-        f"<b>▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰</b>\n"
+        f"📌 Or send a QR code image\n\n"        f"<b>▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰</b>\n"
         f"Type /cancel to go back.",
         parse_mode="HTML")
     return WITHDRAW_UPI
@@ -2124,37 +2136,41 @@ async def withdraw_upi(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return WITHDRAW_UPI
 
     balance = get_balance(user.id)
+    balance_inr = round(balance * USD_TO_INR)
     await update.message.reply_text(
         f"<b>✅ Payment details received:</b> {upi_display}\n\n"
         f"<b>▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰</b>\n"
         f"<b>💰 Step 2 of 2</b>\n\n"
         f"<b>Your current balance: {fmt(balance)}</b>\n\n"
-        f"How much do you want to withdraw?\n"
-        f"📌 <b>Example:</b> <code>10</code>\n\n"
+        f"How much do you want to withdraw? <b>(Enter amount in ₹)</b>\n"
+        f"📌 <b>Example:</b> <code>500</code>\n\n"
         f"<b>▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰</b>\n"
         f"Type /cancel to go back.",
         parse_mode="HTML")
     return WITHDRAW_AMOUNT
 
 async def withdraw_amount(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Step 3 — Got amount, validate balance and submit request."""
+    """Step 3 — Got amount (in INR), validate balance and submit request."""
     user = update.effective_user
     try:
-        amount = float(update.message.text.strip())
-        if amount <= 0:
+        amount_inr = float(update.message.text.strip())
+        if amount_inr <= 0:
             raise ValueError
     except ValueError:
         await update.message.reply_text(
-            "<b>❌ Invalid amount.</b> Enter a positive number like <code>10</code>.",
+            "<b>❌ Invalid amount.</b> Enter a positive number in ₹ like <code>500</code>.",
             parse_mode="HTML")
         return WITHDRAW_AMOUNT
 
-    balance = get_balance(user.id)
-    if balance < amount:
+    # Convert INR → USD for internal balance comparison and storage
+    amount_usd = round(amount_inr / USD_TO_INR, 2)
+    balance    = get_balance(user.id)
+
+    if balance < amount_usd:
         await update.message.reply_text(
             f"<b>❌ Insufficient Balance</b>\n\n"
             f"<b>💰 Your balance: {fmt(balance)}</b>\n"
-            f"<b>💸 Requested:    {fmt(amount)}</b>\n\n"
+            f"<b>💸 Requested:    ₹{amount_inr:.0f} (${amount_usd:.2f})</b>\n\n"
             f"You can only withdraw up to <b>{fmt(balance)}</b>.\n"
             f"Please enter a lower amount:",
             parse_mode="HTML")
@@ -2163,22 +2179,22 @@ async def withdraw_amount(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     upi_val  = ctx.user_data.get("wd_upi", "")
     upi_type = ctx.user_data.get("wd_upi_type", "upi")
 
-    # Deduct balance and record withdrawal
+    # Deduct balance (USD) and record withdrawal
     with get_db() as conn:
         wd_id = conn.execute(
             "INSERT INTO withdrawals (user_id, amount, upi_id) VALUES (%s,%s,%s) RETURNING id",
-            (user.id, amount, upi_val if upi_type == "upi" else "[QR Code]")
+            (user.id, amount_usd, upi_val if upi_type == "upi" else "[QR Code]")
         ).fetchone()["id"]
         conn.execute(
             "UPDATE users SET balance=balance-%s WHERE user_id=%s",
-            (amount, user.id)
+            (amount_usd, user.id)
         )
 
     new_balance = get_balance(user.id)
 
     await update.message.reply_text(
         f"<b>✅ Withdrawal Request Submitted!</b>\n\n"
-        f"<b>💸 Amount: {fmt(amount)}</b>\n"
+        f"<b>💸 Amount: ₹{amount_inr:.0f} (${amount_usd:.2f})</b>\n"
         f"<b>🆔 Reference ID:</b> <code>{wd_id}</code>\n"
         f"<b>💰 Remaining Balance: {fmt(new_balance)}</b>\n\n"
         f"⏳ <b>Admin will review and process your withdrawal shortly.</b>",
