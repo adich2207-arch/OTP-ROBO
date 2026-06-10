@@ -68,7 +68,7 @@ async def send_to_channel(bot, channel_id: int, text: str, parse_mode: str = "HT
 
 # ── Force Join helper ─────────────────────────────────────────────────────────
 async def check_force_join(bot, user_id: int) -> list:
-    """Return a list of (channel_id_or_username, invite_url) for channels the user has NOT joined."""
+    """Return a list of (channel_id_or_username, invite_url, channel_title) for channels the user has NOT joined."""
     not_joined = []
     pairs = [
         (_fc(FORCE_CHANNEL_1), FORCE_CHANNEL_1_URL),
@@ -77,13 +77,19 @@ async def check_force_join(bot, user_id: int) -> list:
     for channel, url in pairs:
         if not channel:
             continue  # slot disabled
+        # Fetch channel title for the button label
+        try:
+            chat = await bot.get_chat(channel)
+            title = chat.title or str(channel)
+        except Exception:
+            title = str(channel)
         try:
             member = await bot.get_chat_member(channel, user_id)
             if member.status in ("left", "kicked", "banned"):
-                not_joined.append((channel, url))
+                not_joined.append((channel, url, title))
         except Exception:
             # Can't check → treat as not joined (bot may not be admin yet)
-            not_joined.append((channel, url))
+            not_joined.append((channel, url, title))
     return not_joined
 
 # ── Unicode bold text helper ──────────────────────────────────────────────────
@@ -270,6 +276,7 @@ def main_menu_keyboard():
          InlineKeyboardButton("💸  Withdraw",       callback_data="menu_withdraw")],
         [InlineKeyboardButton("📊  My Wallet",      callback_data="menu_balance"),
          InlineKeyboardButton("👥  Refer & Earn",   callback_data="menu_refer")],
+        [InlineKeyboardButton("📦  My Orders",      callback_data="menu_orders")],
         [InlineKeyboardButton("🆘  Support",        url=f"https://t.me/{SUPPORT_USERNAME}")],
     ])
 
@@ -312,8 +319,8 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     not_joined = await check_force_join(ctx.bot, user.id)
     if not_joined:
         buttons = []
-        for i, (channel, url) in enumerate(not_joined, start=1):
-            buttons.append([InlineKeyboardButton(f"📢 Join Channel {i}", url=url)])
+        for channel, url, title in not_joined:
+            buttons.append([InlineKeyboardButton(f"📢 Join {title}", url=url)])
         buttons.append([InlineKeyboardButton("✅ I've Joined", callback_data="check_joined")])
         await update.message.reply_text(
             f"👋 <b>Welcome, {user.first_name}!</b>\n\n"
@@ -360,8 +367,8 @@ async def check_joined_cb(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not_joined:
         # Still hasn't joined all channels
         buttons = []
-        for i, (channel, url) in enumerate(not_joined, start=1):
-            buttons.append([InlineKeyboardButton(f"📢 Join Channel {i}", url=url)])
+        for channel, url, title in not_joined:
+            buttons.append([InlineKeyboardButton(f"📢 Join {title}", url=url)])
         buttons.append([InlineKeyboardButton("✅ I've Joined", callback_data="check_joined")])
         await query.edit_message_text(
             f"❌ <b>You haven't joined all required channels yet.</b>\n\n"
@@ -576,6 +583,10 @@ async def dep_approve_cb(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f"<b>🆔 Ref:</b> <code>{dep_id}</code>\n\n"
         f"<b>Start shopping now! 🛒</b>",
         parse_mode="HTML", reply_markup=main_menu_keyboard())
+    bot_username = (await ctx.bot.get_me()).username
+    dep_buy_kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🛒 Buy Now", url=f"https://t.me/{bot_username}?start=buy")]
+    ])
     await send_to_channel(ctx.bot, FUNDS_CHANNEL,
         f"✅ <b>DEPOSIT APPROVED</b>\n"
         f"━━━━━━━━━━━━━━━━━━━\n"
@@ -585,7 +596,8 @@ async def dep_approve_cb(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f"📊 Status: <b>✅ Approved</b>\n"
         f"━━━━━━━━━━━━━━━━━━━\n"
         f"🤖 @OtpSellerStore_Bot"
-        + (f"\n🤝 Referral: <b>${commission:.2f}</b>" if commission else ""))
+        + (f"\n🤝 Referral: <b>${commission:.2f}</b>" if commission else ""),
+        reply_markup=dep_buy_kb)
     if referrer and referrer["referred_by"] and commission > 0:
         try:
             await ctx.bot.send_message(referrer["referred_by"],
@@ -1303,10 +1315,12 @@ async def confirm_buy(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f"<b>📱 Phone:</b> <code>{phone}</code>",
         parse_mode="HTML"
     )
-    # Post to trades channel
-    buyer = await ctx.bot.get_chat(user_id)
-    buyer_name = f"@{buyer.username}" if buyer.username else buyer.first_name
+    # Post to trades channel — no username, only chat ID + Buy Now button
     flag, country_name = phone_to_country(phone)
+    bot_username = (await ctx.bot.get_me()).username
+    buy_now_kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🛒 Buy Now", url=f"https://t.me/{bot_username}?start=buy")]
+    ])
     await send_to_channel(ctx.bot, TRADES_CHANNEL,
         f"🛒 <b>ACCOUNT SOLD</b>\n"
         f"━━━━━━━━━━━━━━━━━━━\n"
@@ -1314,10 +1328,11 @@ async def confirm_buy(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f"🌍 Country {flag} {country_name}\n"
         f"📱 Phone: <code>{mask_phone(phone)}</code>\n"
         f"💵 Price: <b>${acc['price']:.2f}</b>\n"
-        f"👤 Buyer: {buyer_name} (<code>{user_id}</code>)\n"
+        f"👤 Buyer: <code>{user_id}</code>\n"
         f"📊 Status: ✅ Sold\n"
         f"━━━━━━━━━━━━━━━━━━━\n"
-        f"🤖 @OtpSellerStore_Bot"
+        f"🤖 @OtpSellerStore_Bot",
+        reply_markup=buy_now_kb
     )
 
 
@@ -1897,6 +1912,59 @@ async def refer_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f"📤 <b>Share this link. When they deposit, you get 2% instantly!</b>",
         parse_mode="HTML", reply_markup=back_keyboard())
 
+async def my_orders(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Show the user's purchase history."""
+    query = update.callback_query
+    await query.answer()
+    user_id = query.from_user.id
+
+    with get_db() as conn:
+        orders = conn.execute(
+            """SELECT a.id, a.phone, a.price, a.created_at
+               FROM accounts a
+               WHERE a.buyer_id = %s
+               ORDER BY a.created_at DESC
+               LIMIT 20""",
+            (user_id,)
+        ).fetchall()
+
+    if not orders:
+        await query.edit_message_text(
+            "<b>📦 MY ORDERS</b>\n"
+            "<b>▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰</b>\n\n"
+            "😔 <b>You haven't purchased any accounts yet.</b>\n\n"
+            "Tap <b>🛒 Buy Account</b> to browse the marketplace!",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🛒  Buy Account", callback_data="menu_buy")],
+                [InlineKeyboardButton("🔙  Back to Menu", callback_data="menu_back")]
+            ]))
+        return
+
+    lines = [
+        "<b>📦 MY ORDERS</b>",
+        "<b>▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰</b>\n",
+    ]
+    for i, o in enumerate(orders, start=1):
+        flag, country_name = phone_to_country(o["phone"] or "")
+        date_str = o["created_at"].strftime("%d %b %Y") if o["created_at"] else "—"
+        lines.append(
+            f"<b>{i}.</b> 🔑 <b>Account #{o['id']}</b>\n"
+            f"   {flag} {country_name}  •  📱 <code>{mask_phone(o['phone'] or '')}</code>\n"
+            f"   💵 <b>${o['price']:.2f}</b>  •  🗓 {date_str}\n"
+        )
+
+    lines.append("<b>▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰</b>")
+    lines.append(f"<b>Total purchases: {len(orders)}</b>")
+
+    await query.edit_message_text(
+        "\n".join(lines),
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("🛒  Buy More", callback_data="menu_buy")],
+            [InlineKeyboardButton("🔙  Back to Menu", callback_data="menu_back")]
+        ]))
+
 async def withdraw_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Step 1 — Ask for UPI ID or QR code."""
     query = update.callback_query
@@ -2173,6 +2241,60 @@ async def admin_getfileid(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         parse_mode="HTML")
 
 
+# ── Admin: Broadcast ─────────────────────────────────────────────────────────
+async def admin_broadcast(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Send a message to all bot users.
+    Usage: /broadcast Your message here
+    Supports HTML formatting. The message is sent with a 🛒 Buy Now button.
+    """
+    if update.effective_user.id != ADMIN_ID:
+        return
+
+    text = " ".join(ctx.args).strip() if ctx.args else ""
+    if not text:
+        await update.message.reply_text(
+            "<b>📢 Broadcast Usage:</b>\n\n"
+            "<code>/broadcast Your message here</code>\n\n"
+            "You can use HTML formatting:\n"
+            "<code>&lt;b&gt;bold&lt;/b&gt;</code>, <code>&lt;i&gt;italic&lt;/i&gt;</code>, "
+            "<code>&lt;code&gt;mono&lt;/code&gt;</code>\n\n"
+            "<b>Example:</b>\n"
+            "<code>/broadcast 🔥 New accounts added!\n\n🇮🇳 India — $2.00\n🇵🇰 Pakistan — $1.50\n\nBuy now! 🛒</code>",
+            parse_mode="HTML")
+        return
+
+    # Fetch all user IDs
+    with get_db() as conn:
+        users = conn.execute("SELECT user_id FROM users").fetchall()
+
+    bot_username = (await ctx.bot.get_me()).username
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🛒 Buy Now", url=f"https://t.me/{bot_username}?start=buy")]
+    ])
+
+    sent = 0
+    failed = 0
+    for u in users:
+        try:
+            await ctx.bot.send_message(
+                u["user_id"],
+                f"📢 <b>Announcement</b>\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                f"{text}",
+                parse_mode="HTML",
+                reply_markup=kb
+            )
+            sent += 1
+        except Exception:
+            failed += 1
+
+    await update.message.reply_text(
+        f"<b>✅ Broadcast Complete</b>\n\n"
+        f"<b>📨 Sent:</b> <code>{sent}</code>\n"
+        f"<b>❌ Failed:</b> <code>{failed}</code> (blocked / deleted)",
+        parse_mode="HTML")
+
+
 # ── Flask + Main ──────────────────────────────────────────────────────────────
 def build_app() -> Application:
     app = Application.builder().token(BOT_TOKEN).build()
@@ -2271,6 +2393,7 @@ def build_app() -> Application:
     app.add_handler(CallbackQueryHandler(sell_reject_cb, pattern=r"^sell_reject_\d+$"))
     app.add_handler(CommandHandler("add_sell",    admin_add_sell))
     app.add_handler(CommandHandler("prices",      cmd_prices))
+    app.add_handler(CommandHandler("broadcast",   admin_broadcast))
     app.add_handler(MessageHandler(filters.Regex(r"^/wd_approve_\d+$") & filters.User(ADMIN_ID), wd_approve))
     app.add_handler(MessageHandler(filters.Regex(r"^/wd_reject_\d+$")  & filters.User(ADMIN_ID), wd_reject))
     # Admin panel inline button handlers (outside conversation for view/del/back/close)
@@ -2289,6 +2412,7 @@ def build_app() -> Application:
     app.add_handler(CallbackQueryHandler(confirm_buy,   pattern=r"^confirm_\d+$"))
     app.add_handler(CallbackQueryHandler(show_balance,  pattern="^menu_balance$"))
     app.add_handler(CallbackQueryHandler(refer_menu,    pattern="^menu_refer$"))
+    app.add_handler(CallbackQueryHandler(my_orders,     pattern="^menu_orders$"))
     app.add_handler(CallbackQueryHandler(menu_back,     pattern="^menu_back$"))
     return app
 
