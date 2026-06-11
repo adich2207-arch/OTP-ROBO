@@ -2438,6 +2438,117 @@ async def admin_broadcast(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         parse_mode="HTML")
 
 
+# ── Group: anti-link + command redirect ──────────────────────────────────────
+import re as _re
+
+# Tracks how many link violations each user has had  {user_id: count}
+_link_warn_count: dict = {}
+
+_LINK_PATTERN = _re.compile(
+    r"(https?://|t\.me/|@\w{3,}|telegram\.me/|wa\.me/|whatsapp\.com)",
+    _re.IGNORECASE
+)
+
+async def group_anti_link(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Delete messages containing links/usernames in groups and warn/ban the sender."""
+    msg  = update.message
+    if not msg or not msg.text:
+        return
+    chat = msg.chat
+    # Only act in groups / supergroups
+    if chat.type not in ("group", "supergroup"):
+        return
+    # Ignore admins
+    try:
+        member = await ctx.bot.get_chat_member(chat.id, msg.from_user.id)
+        if member.status in ("administrator", "creator"):
+            return
+    except Exception:
+        return
+
+    if not _LINK_PATTERN.search(msg.text):
+        return
+
+    user    = msg.from_user
+    user_id = user.id
+    name    = f"@{user.username}" if user.username else user.first_name
+
+    # Delete the offending message
+    try:
+        await msg.delete()
+    except Exception:
+        pass
+
+    _link_warn_count[user_id] = _link_warn_count.get(user_id, 0) + 1
+    count = _link_warn_count[user_id]
+
+    if count == 1:
+        # First offence — warn
+        warn_msg = await ctx.bot.send_message(
+            chat.id,
+            f"⚠️ {name}, <b>links and usernames are not allowed here!</b>\n\n"
+            f"This is your <b>first warning</b>. A second violation will result in a ban.",
+            parse_mode="HTML"
+        )
+        # Auto-delete the warning after 30 seconds
+        import asyncio
+        async def _del_warn():
+            await asyncio.sleep(30)
+            try:
+                await warn_msg.delete()
+            except Exception:
+                pass
+        asyncio.get_event_loop().create_task(_del_warn())
+    else:
+        # Second+ offence — ban
+        try:
+            await ctx.bot.ban_chat_member(chat.id, user_id)
+            _link_warn_count.pop(user_id, None)
+            ban_msg = await ctx.bot.send_message(
+                chat.id,
+                f"🚫 {name} has been <b>banned</b> for repeatedly posting links.",
+                parse_mode="HTML"
+            )
+            import asyncio
+            async def _del_ban():
+                await asyncio.sleep(30)
+                try:
+                    await ban_msg.delete()
+                except Exception:
+                    pass
+            asyncio.get_event_loop().create_task(_del_ban())
+        except Exception as e:
+            logger.warning(f"[anti-link] ban failed for {user_id}: {e}")
+
+
+async def group_command_redirect(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """If someone sends a bot command in a group, delete it and send a DM redirect message."""
+    msg  = update.message
+    if not msg or not msg.text:
+        return
+    chat = msg.chat
+    if chat.type not in ("group", "supergroup"):
+        return
+
+    # Delete the command message
+    try:
+        await msg.delete()
+    except Exception:
+        pass
+
+    bot_username = (await ctx.bot.get_me()).username
+    await ctx.bot.send_message(
+        chat.id,
+        f"👋 <b>Welcome to Otp Seller Store!</b>\n\n"
+        f"📲 Use me in DM to buy Telegram accounts, recharge balance, and more.\n\n"
+        f"👉 Tap the button below to get started.",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("🤖 Open in DM", url=f"https://t.me/{bot_username}?start=hi")]
+        ])
+    )
+
+
 # ── Flask + Main ──────────────────────────────────────────────────────────────
 def build_app() -> Application:
     app = Application.builder().token(BOT_TOKEN).build()
@@ -2557,6 +2668,17 @@ def build_app() -> Application:
     app.add_handler(CallbackQueryHandler(refer_menu,    pattern="^menu_refer$"))
     app.add_handler(CallbackQueryHandler(my_orders,     pattern="^menu_orders$"))
     app.add_handler(CallbackQueryHandler(menu_back,     pattern="^menu_back$"))
+    # ── Group features (lowest priority — run after all DM handlers) ──────────
+    # Commands sent in groups → redirect to DM
+    app.add_handler(MessageHandler(
+        filters.COMMAND & (filters.ChatType.GROUP | filters.ChatType.SUPERGROUP),
+        group_command_redirect
+    ))
+    # Links/usernames in groups → delete + warn/ban
+    app.add_handler(MessageHandler(
+        filters.TEXT & ~filters.COMMAND & (filters.ChatType.GROUP | filters.ChatType.SUPERGROUP),
+        group_anti_link
+    ))
     return app
 
 def main():
