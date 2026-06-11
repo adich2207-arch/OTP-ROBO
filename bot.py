@@ -2449,6 +2449,122 @@ _LINK_PATTERN = _re.compile(
     _re.IGNORECASE
 )
 
+async def group_mute(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Admin replies to a message with /mute [duration in minutes] to mute a user.
+    Examples:
+      /mute        → mute for 1 hour (default)
+      /mute 10     → mute for 10 minutes
+      /mute 0      → mute permanently
+    """
+    msg  = update.message
+    chat = msg.chat
+    if chat.type not in ("group", "supergroup"):
+        return
+
+    # Only allow admins / creator
+    try:
+        caller = await ctx.bot.get_chat_member(chat.id, msg.from_user.id)
+        if caller.status not in ("administrator", "creator"):
+            await msg.reply_text("❌ Only admins can use this command.")
+            return
+    except Exception:
+        return
+
+    # Must be a reply
+    if not msg.reply_to_message:
+        await msg.reply_text(
+            "⚠️ <b>Reply to a user's message</b> to mute them.\n\n"
+            "Usage: <code>/mute [minutes]</code>\n"
+            "Example: <code>/mute 10</code> (0 = permanent)",
+            parse_mode="HTML")
+        return
+
+    target      = msg.reply_to_message.from_user
+    target_id   = target.id
+    target_name = f"@{target.username}" if target.username else target.first_name
+
+    # Parse optional duration
+    parts = msg.text.strip().split()
+    try:
+        minutes = int(parts[1]) if len(parts) > 1 else 60
+    except ValueError:
+        await msg.reply_text("❌ Invalid duration. Use a number of minutes, e.g. <code>/mute 30</code>", parse_mode="HTML")
+        return
+
+    from datetime import datetime, timezone, timedelta
+    from telegram import ChatPermissions
+
+    if minutes == 0:
+        until = None  # permanent
+        duration_text = "permanently"
+    else:
+        until = datetime.now(timezone.utc) + timedelta(minutes=minutes)
+        duration_text = f"for <b>{minutes} minute(s)</b>"
+
+    try:
+        await ctx.bot.restrict_chat_member(
+            chat.id,
+            target_id,
+            permissions=ChatPermissions(can_send_messages=False),
+            until_date=until
+        )
+        await msg.reply_text(
+            f"🔇 {target_name} has been <b>muted</b> {duration_text}.",
+            parse_mode="HTML"
+        )
+    except Exception as e:
+        await msg.reply_text(f"❌ Could not mute: <code>{e}</code>", parse_mode="HTML")
+
+
+async def group_unmute(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Admin replies to a message with /unmute to restore a user's ability to send messages."""
+    msg  = update.message
+    chat = msg.chat
+    if chat.type not in ("group", "supergroup"):
+        return
+
+    # Only allow admins / creator
+    try:
+        caller = await ctx.bot.get_chat_member(chat.id, msg.from_user.id)
+        if caller.status not in ("administrator", "creator"):
+            await msg.reply_text("❌ Only admins can use this command.")
+            return
+    except Exception:
+        return
+
+    if not msg.reply_to_message:
+        await msg.reply_text(
+            "⚠️ <b>Reply to a user's message</b> to unmute them.\n\n"
+            "Usage: <code>/unmute</code>",
+            parse_mode="HTML")
+        return
+
+    from telegram import ChatPermissions
+
+    target      = msg.reply_to_message.from_user
+    target_id   = target.id
+    target_name = f"@{target.username}" if target.username else target.first_name
+
+    try:
+        await ctx.bot.restrict_chat_member(
+            chat.id,
+            target_id,
+            permissions=ChatPermissions(
+                can_send_messages=True,
+                can_send_media_messages=True,
+                can_send_polls=True,
+                can_send_other_messages=True,
+                can_add_web_page_previews=True,
+            )
+        )
+        await msg.reply_text(
+            f"🔊 {target_name} has been <b>unmuted</b>.",
+            parse_mode="HTML"
+        )
+    except Exception as e:
+        await msg.reply_text(f"❌ Could not unmute: <code>{e}</code>", parse_mode="HTML")
+
+
 async def group_anti_link(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Delete messages containing links/usernames in groups and warn/ban the sender."""
     msg  = update.message
@@ -2669,6 +2785,9 @@ def build_app() -> Application:
     app.add_handler(CallbackQueryHandler(my_orders,     pattern="^menu_orders$"))
     app.add_handler(CallbackQueryHandler(menu_back,     pattern="^menu_back$"))
     # ── Group features (lowest priority — run after all DM handlers) ──────────
+    # Mute / unmute commands (group admins only)
+    app.add_handler(CommandHandler("mute",   group_mute))
+    app.add_handler(CommandHandler("unmute", group_unmute))
     # Commands sent in groups → redirect to DM
     app.add_handler(MessageHandler(
         filters.COMMAND & (filters.ChatType.GROUP | filters.ChatType.SUPERGROUP),
