@@ -5,7 +5,10 @@ import psycopg
 from psycopg.rows import dict_row
 from psycopg_pool import ConnectionPool
 from dotenv import load_dotenv
-load_dotenv(dotenv_path="/home/container/.env")
+
+# Load .env from the script's own directory — works on Render, KataBump, and local
+_env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+load_dotenv(dotenv_path=_env_path)
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -2568,6 +2571,24 @@ def main():
 
     import asyncio
     import signal
+    import threading
+    from http.server import HTTPServer, BaseHTTPRequestHandler
+
+    # Minimal HTTP server so Render sees an open port
+    class HealthHandler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b"OK")
+        def log_message(self, *args):
+            pass  # suppress access logs
+
+    def run_health_server():
+        server = HTTPServer(("0.0.0.0", PORT), HealthHandler)
+        server.serve_forever()
+
+    threading.Thread(target=run_health_server, daemon=True).start()
+    logger.info(f"Health check server running on port {PORT}")
 
     async def run():
         logger.info("🚀 Starting bot in polling mode...")
