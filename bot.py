@@ -3,10 +3,10 @@ import logging
 import traceback
 import psycopg
 from psycopg.rows import dict_row
+from psycopg_pool import ConnectionPool
 from dotenv import load_dotenv
-load_dotenv()
+load_dotenv(dotenv_path="/home/container/.env")
 
-from flask import Flask, request, Response
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application, CommandHandler, CallbackQueryHandler,
@@ -16,14 +16,11 @@ from telegram.ext import (
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-flask_app = Flask(__name__)
-
 # ── Config ────────────────────────────────────────────────────────────────────
 BOT_TOKEN        = os.getenv("BOT_TOKEN")
 ADMIN_ID         = int(os.getenv("ADMIN_ID", "0"))
 SUPPORT_USERNAME = os.getenv("SUPPORT_USERNAME", "support")
 DATABASE_URL     = os.getenv("DATABASE_URL", "")
-WEBHOOK_URL      = os.getenv("WEBHOOK_URL", "")
 PORT             = int(os.getenv("PORT", "8080"))
 API_ID           = int(os.getenv("API_ID", "0"))
 API_HASH         = os.getenv("API_HASH", "")
@@ -208,8 +205,21 @@ PAYMENT_QR     = os.getenv("PAYMENT_QR_FILE_ID", "")   # Telegram file_id (optio
 PAYMENT_QR_PATH = os.getenv("PAYMENT_QR_PATH", "qr.png")  # local image file path
 
 # ── Database ──────────────────────────────────────────────────────────────────
+_pool: ConnectionPool = None
+
+def get_pool() -> ConnectionPool:
+    global _pool
+    if _pool is None or _pool.closed:
+        _pool = ConnectionPool(
+            DATABASE_URL,
+            min_size=1,
+            max_size=5,
+            kwargs={"row_factory": dict_row},
+        )
+    return _pool
+
 def get_db():
-    return psycopg.connect(DATABASE_URL, row_factory=dict_row)
+    return get_pool().connection()
 
 def init_db():
     with get_db() as conn:
@@ -1383,21 +1393,10 @@ async def confirm_buy(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     )
 
     # ── Launch OTP watcher as a background task on the shared event loop ─────
-    # Must NOT await — the webhook has no timeout now but we still want this
-    # running independently so it doesn't block other updates.
-    # Use the same loop the webhook runs on (stored in flask_app.config).
     import asyncio
-    bg_loop = flask_app.config.get("ASYNCIO_LOOP")
-    if bg_loop:
-        asyncio.run_coroutine_threadsafe(
-            _watch_for_otp(ctx.bot, user_id, acc["session"], phone, acc_id),
-            bg_loop
-        )
-    else:
-        # Fallback: schedule on current loop
-        asyncio.get_event_loop().create_task(
-            _watch_for_otp(ctx.bot, user_id, acc["session"], phone, acc_id)
-        )
+    asyncio.get_event_loop().create_task(
+        _watch_for_otp(ctx.bot, user_id, acc["session"], phone, acc_id)
+    )
 
     # Notify admin
     await ctx.bot.send_message(
@@ -2424,8 +2423,11 @@ async def admin_broadcast(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         try:
             await ctx.bot.send_message(
                 u["user_id"],
-                text,
+                f"📢 <b>Announcement</b>\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                f"{text}",
                 parse_mode="HTML",
+                reply_markup=kb
             )
             sent += 1
         except Exception:
@@ -2436,233 +2438,6 @@ async def admin_broadcast(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f"<b>📨 Sent:</b> <code>{sent}</code>\n"
         f"<b>❌ Failed:</b> <code>{failed}</code> (blocked / deleted)",
         parse_mode="HTML")
-
-
-# ── Group: anti-link + command redirect ──────────────────────────────────────
-import re as _re
-
-# Tracks how many link violations each user has had  {user_id: count}
-_link_warn_count: dict = {}
-
-_LINK_PATTERN = _re.compile(
-    r"(https?://|t\.me/|@\w{3,}|telegram\.me/|wa\.me/|whatsapp\.com)",
-    _re.IGNORECASE
-)
-
-async def group_mute(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Admin replies to a message with /mute [duration in minutes] to mute a user.
-    Examples:
-      /mute        → mute for 1 hour (default)
-      /mute 10     → mute for 10 minutes
-      /mute 0      → mute permanently
-    """
-    msg  = update.message
-    chat = msg.chat
-    if chat.type not in ("group", "supergroup"):
-        return
-
-    # Only allow admins / creator
-    try:
-        caller = await ctx.bot.get_chat_member(chat.id, msg.from_user.id)
-        if caller.status not in ("administrator", "creator"):
-            await msg.reply_text("❌ Only admins can use this command.")
-            return
-    except Exception:
-        return
-
-    # Must be a reply
-    if not msg.reply_to_message:
-        await msg.reply_text(
-            "⚠️ <b>Reply to a user's message</b> to mute them.\n\n"
-            "Usage: <code>/mute [minutes]</code>\n"
-            "Example: <code>/mute 10</code> (0 = permanent)",
-            parse_mode="HTML")
-        return
-
-    target      = msg.reply_to_message.from_user
-    target_id   = target.id
-    target_name = f"@{target.username}" if target.username else target.first_name
-
-    # Parse optional duration
-    parts = msg.text.strip().split()
-    try:
-        minutes = int(parts[1]) if len(parts) > 1 else 60
-    except ValueError:
-        await msg.reply_text("❌ Invalid duration. Use a number of minutes, e.g. <code>/mute 30</code>", parse_mode="HTML")
-        return
-
-    from datetime import datetime, timezone, timedelta
-    from telegram import ChatPermissions
-
-    if minutes == 0:
-        until = None  # permanent
-        duration_text = "permanently"
-    else:
-        until = datetime.now(timezone.utc) + timedelta(minutes=minutes)
-        duration_text = f"for <b>{minutes} minute(s)</b>"
-
-    try:
-        await ctx.bot.restrict_chat_member(
-            chat.id,
-            target_id,
-            permissions=ChatPermissions(can_send_messages=False),
-            until_date=until
-        )
-        await msg.reply_text(
-            f"🔇 {target_name} has been <b>muted</b> {duration_text}.",
-            parse_mode="HTML"
-        )
-    except Exception as e:
-        await msg.reply_text(f"❌ Could not mute: <code>{e}</code>", parse_mode="HTML")
-
-
-async def group_unmute(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Admin replies to a message with /unmute to restore a user's ability to send messages."""
-    msg  = update.message
-    chat = msg.chat
-    if chat.type not in ("group", "supergroup"):
-        return
-
-    # Only allow admins / creator
-    try:
-        caller = await ctx.bot.get_chat_member(chat.id, msg.from_user.id)
-        if caller.status not in ("administrator", "creator"):
-            await msg.reply_text("❌ Only admins can use this command.")
-            return
-    except Exception:
-        return
-
-    if not msg.reply_to_message:
-        await msg.reply_text(
-            "⚠️ <b>Reply to a user's message</b> to unmute them.\n\n"
-            "Usage: <code>/unmute</code>",
-            parse_mode="HTML")
-        return
-
-    from telegram import ChatPermissions
-
-    target      = msg.reply_to_message.from_user
-    target_id   = target.id
-    target_name = f"@{target.username}" if target.username else target.first_name
-
-    try:
-        await ctx.bot.restrict_chat_member(
-            chat.id,
-            target_id,
-            permissions=ChatPermissions(
-                can_send_messages=True,
-                can_send_media_messages=True,
-                can_send_polls=True,
-                can_send_other_messages=True,
-                can_add_web_page_previews=True,
-            )
-        )
-        await msg.reply_text(
-            f"🔊 {target_name} has been <b>unmuted</b>.",
-            parse_mode="HTML"
-        )
-    except Exception as e:
-        await msg.reply_text(f"❌ Could not unmute: <code>{e}</code>", parse_mode="HTML")
-
-
-async def group_anti_link(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Delete messages containing links/usernames in groups and warn/ban the sender."""
-    msg  = update.message
-    if not msg or not msg.text:
-        return
-    chat = msg.chat
-    # Only act in groups / supergroups
-    if chat.type not in ("group", "supergroup"):
-        return
-    # Ignore admins
-    try:
-        member = await ctx.bot.get_chat_member(chat.id, msg.from_user.id)
-        if member.status in ("administrator", "creator"):
-            return
-    except Exception:
-        return
-
-    if not _LINK_PATTERN.search(msg.text):
-        return
-
-    user    = msg.from_user
-    user_id = user.id
-    name    = f"@{user.username}" if user.username else user.first_name
-
-    # Delete the offending message
-    try:
-        await msg.delete()
-    except Exception:
-        pass
-
-    _link_warn_count[user_id] = _link_warn_count.get(user_id, 0) + 1
-    count = _link_warn_count[user_id]
-
-    if count == 1:
-        # First offence — warn
-        warn_msg = await ctx.bot.send_message(
-            chat.id,
-            f"⚠️ {name}, <b>links and usernames are not allowed here!</b>\n\n"
-            f"This is your <b>first warning</b>. A second violation will result in a ban.",
-            parse_mode="HTML"
-        )
-        # Auto-delete the warning after 30 seconds
-        import asyncio
-        async def _del_warn():
-            await asyncio.sleep(30)
-            try:
-                await warn_msg.delete()
-            except Exception:
-                pass
-        asyncio.get_event_loop().create_task(_del_warn())
-    else:
-        # Second+ offence — ban
-        try:
-            await ctx.bot.ban_chat_member(chat.id, user_id)
-            _link_warn_count.pop(user_id, None)
-            ban_msg = await ctx.bot.send_message(
-                chat.id,
-                f"🚫 {name} has been <b>banned</b> for repeatedly posting links.",
-                parse_mode="HTML"
-            )
-            import asyncio
-            async def _del_ban():
-                await asyncio.sleep(30)
-                try:
-                    await ban_msg.delete()
-                except Exception:
-                    pass
-            asyncio.get_event_loop().create_task(_del_ban())
-        except Exception as e:
-            logger.warning(f"[anti-link] ban failed for {user_id}: {e}")
-
-
-async def group_command_redirect(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """If someone sends a bot command in a group, delete it and send a DM redirect message."""
-    msg  = update.message
-    if not msg or not msg.text:
-        return
-    chat = msg.chat
-    if chat.type not in ("group", "supergroup"):
-        return
-
-    # Delete the command message
-    try:
-        await msg.delete()
-    except Exception:
-        pass
-
-    bot_username = (await ctx.bot.get_me()).username
-    await ctx.bot.send_message(
-        chat.id,
-        f"👋 <b>Welcome to Otp Seller Store!</b>\n\n"
-        f"📲 Use me in DM to buy Telegram accounts, recharge balance, and more.\n\n"
-        f"👉 Tap the button below to get started.",
-        parse_mode="HTML",
-        reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("🤖 Open in DM", url=f"https://t.me/{bot_username}?start=hi")]
-        ])
-    )
 
 
 # ── Flask + Main ──────────────────────────────────────────────────────────────
@@ -2784,20 +2559,6 @@ def build_app() -> Application:
     app.add_handler(CallbackQueryHandler(refer_menu,    pattern="^menu_refer$"))
     app.add_handler(CallbackQueryHandler(my_orders,     pattern="^menu_orders$"))
     app.add_handler(CallbackQueryHandler(menu_back,     pattern="^menu_back$"))
-    # ── Group features (lowest priority — run after all DM handlers) ──────────
-    # Mute / unmute commands (group admins only)
-    app.add_handler(CommandHandler("mute",   group_mute))
-    app.add_handler(CommandHandler("unmute", group_unmute))
-    # Commands sent in groups → redirect to DM
-    app.add_handler(MessageHandler(
-        filters.COMMAND & (filters.ChatType.GROUP | filters.ChatType.SUPERGROUP),
-        group_command_redirect
-    ))
-    # Links/usernames in groups → delete + warn/ban
-    app.add_handler(MessageHandler(
-        filters.TEXT & ~filters.COMMAND & (filters.ChatType.GROUP | filters.ChatType.SUPERGROUP),
-        group_anti_link
-    ))
     return app
 
 def main():
@@ -2806,50 +2567,20 @@ def main():
     ptb_app = build_app()
 
     import asyncio
-    import threading
 
-    # Create a dedicated event loop that runs in a background thread.
-    # Flask runs in the main thread; all async PTB work runs on this loop.
-    loop = asyncio.new_event_loop()
+    async def run():
+        async with ptb_app:
+            await ptb_app.bot.delete_webhook(drop_pending_updates=True)
+            logger.info("🚀 Starting bot in polling mode...")
+            await ptb_app.start()
+            await ptb_app.updater.start_polling(
+                allowed_updates=["message", "callback_query"],
+                drop_pending_updates=True,
+            )
+            await ptb_app.updater.idle()
+            await ptb_app.stop()
 
-    def run_loop():
-        asyncio.set_event_loop(loop)
-        loop.run_forever()
-
-    t = threading.Thread(target=run_loop, daemon=True)
-    t.start()
-
-    # Store loop so confirm_buy can schedule the OTP watcher on it
-    flask_app.config["ASYNCIO_LOOP"] = loop
-
-    @flask_app.get("/")
-    def health():
-        return Response("OK", status=200)
-
-    @flask_app.post(f"/webhook/{BOT_TOKEN}")
-    def webhook():
-        data   = request.get_json(force=True)
-        logger.info(f"Update {data.get('update_id')} | {list(data.keys())}")
-        update = Update.de_json(data, ptb_app.bot)
-        # Fire-and-forget — never block the webhook thread
-        asyncio.run_coroutine_threadsafe(ptb_app.process_update(update), loop)
-        return Response("ok", status=200)
-
-    async def setup():
-        await ptb_app.initialize()
-        # Clear any stale webhook/pending updates, then set fresh webhook
-        await ptb_app.bot.delete_webhook(drop_pending_updates=True)
-        await ptb_app.bot.set_webhook(
-            url=f"{WEBHOOK_URL}/webhook/{BOT_TOKEN}",
-            drop_pending_updates=True,
-            allowed_updates=["message", "callback_query"],
-        )
-        logger.info(f"✅ Webhook set → {WEBHOOK_URL}/webhook/{BOT_TOKEN}")
-
-    asyncio.run_coroutine_threadsafe(setup(), loop).result(timeout=30)
-
-    logger.info(f"🚀 Starting Flask on port {PORT}")
-    flask_app.run(host="0.0.0.0", port=PORT)
+    asyncio.run(run())
 
 if __name__ == "__main__":
     main()
