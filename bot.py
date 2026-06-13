@@ -1232,7 +1232,8 @@ async def buy_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     row = []
     for code, info in page_slice:
         flag  = country_flag(code)
-        label = f"{flag} {code}+{info['dial']} | {info['price']}$"
+        inr   = round(info['price'] * USD_TO_INR)
+        label = f"{flag} {code}+{info['dial']} | ₹{inr}"
         btn   = InlineKeyboardButton(label, callback_data=f"buycountry_{code}")
         row.append(btn)
         if len(row) == 2:
