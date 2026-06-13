@@ -307,8 +307,8 @@ PE_REFER    = "6129700535130922338"
 PE_SUPPORT  = "6296577138615125756"
 
 # ── Keyboards ─────────────────────────────────────────────────────────────────
-def main_menu_keyboard():
-    return InlineKeyboardMarkup([
+def main_menu_keyboard(user_id: int = 0):
+    buttons = [
         [InlineKeyboardButton("🛒  Buy Account",    callback_data="menu_buy"),
          InlineKeyboardButton("💰  Sell Account",   callback_data="menu_sell")],
         [InlineKeyboardButton("💵  Recharge",       callback_data="menu_deposit"),
@@ -317,7 +317,10 @@ def main_menu_keyboard():
          InlineKeyboardButton("👥  Refer & Earn",   callback_data="menu_refer")],
         [InlineKeyboardButton("📦  My Orders",      callback_data="menu_orders")],
         [InlineKeyboardButton("🆘  Support",        url=f"https://t.me/{SUPPORT_USERNAME}")],
-    ])
+    ]
+    if user_id == ADMIN_ID:
+        buttons.append([InlineKeyboardButton("⚙️  Admin Panel", callback_data="admin_panel")])
+    return InlineKeyboardMarkup(buttons)
 
 def back_keyboard():
     return InlineKeyboardMarkup([[InlineKeyboardButton("🔙  Back to Menu", callback_data="menu_back")]])
@@ -394,9 +397,7 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f"<b>▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰</b>\n"
         f"<b>🔒 Secure  •  Fast  •  Trusted</b>\n\n"
         f"Select an option below 👇",
-        parse_mode="HTML", reply_markup=main_menu_keyboard())
-
-# ── Force Join — "I've Joined" button callback ────────────────────────────────
+        parse_mode="HTML", reply_markup=main_menu_keyboard(user.id))
 async def check_joined_cb(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     user  = query.from_user
@@ -441,7 +442,7 @@ async def check_joined_cb(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f"<b>▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰</b>\n"
         f"<b>🔒 Secure  •  Fast  •  Trusted</b>\n\n"
         f"Select an option below 👇",
-        parse_mode="HTML", reply_markup=main_menu_keyboard())
+        parse_mode="HTML", reply_markup=main_menu_keyboard(user.id))
 
 async def menu_back(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -465,12 +466,11 @@ async def menu_back(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 parse_mode="HTML", reply_markup=main_menu_keyboard())
         else:
             await query.edit_message_text(
-                text, parse_mode="HTML", reply_markup=main_menu_keyboard())
+                text, parse_mode="HTML", reply_markup=main_menu_keyboard(query.from_user.id))
     except Exception:
-        # Fallback: always send a new message
         await ctx.bot.send_message(
             query.from_user.id, text,
-            parse_mode="HTML", reply_markup=main_menu_keyboard())
+            parse_mode="HTML", reply_markup=main_menu_keyboard(query.from_user.id))
     return ConversationHandler.END
 
 async def cancel(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -1169,17 +1169,25 @@ async def _watch_for_otp(bot, user_id: int, session_str: str, phone: str, acc_id
 
 
 # ── BUY FLOW ──────────────────────────────────────────────────────────────────
+BUY_PAGE_SIZE = 20  # countries per page (2 columns × 10 rows)
+
 async def buy_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Show available accounts grouped by country as inline buttons."""
+    """Show available countries as 2-column grid: 🏳 CC+dial | price$  with pagination."""
     query = update.callback_query
     await query.answer()
 
+    # Support pagination via callback_data="menu_buy" or "buy_page_2" etc.
+    page = 0
+    if query.data.startswith("buy_page_"):
+        try:
+            page = int(query.data.split("buy_page_")[1])
+        except ValueError:
+            page = 0
+
     with get_db() as conn:
-        # Get all available accounts with their phone numbers
-        accounts = conn.execute(
+        accounts  = conn.execute(
             "SELECT id, price, phone FROM accounts WHERE status='available' ORDER BY price ASC"
         ).fetchall()
-        # Get country_prices for dial code lookup
         countries = conn.execute(
             "SELECT country_code, country_name, dial_code FROM country_prices ORDER BY LENGTH(dial_code) DESC"
         ).fetchall()
@@ -1192,42 +1200,66 @@ async def buy_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             parse_mode="HTML", reply_markup=back_keyboard())
         return
 
-    # Group accounts by country using dial code matching
+    # Group accounts by country
     def get_country(phone):
-        p = phone.strip().lstrip("+")
-        # First try country_prices table (longest match first)
+        p = (phone or "").strip().lstrip("+")
         for c in countries:
             if c["dial_code"] and p.startswith(c["dial_code"]):
                 return c["country_code"], c["country_name"], c["dial_code"]
-        # Fallback: built-in map (already sorted longest-first)
         for dial, code, name in _BUILTIN_DIAL_MAP:
             if p.startswith(dial):
                 return code, name, dial
         return "XX", "Other", "0"
 
-    country_counts = {}  # {country_code: {name, dial, count, price_min}}
+    country_data = {}  # {country_code: {name, dial, count, min_price}}
     for acc in accounts:
         code, name, dial = get_country(acc["phone"] or "")
-        if code not in country_counts:
-            country_counts[code] = {"name": name, "dial": dial, "count": 0, "price": float(acc["price"])}
-        country_counts[code]["count"] += 1
-        country_counts[code]["price"] = min(country_counts[code]["price"], float(acc["price"]))
+        if code not in country_data:
+            country_data[code] = {"name": name, "dial": dial, "count": 0, "price": float(acc["price"])}
+        country_data[code]["count"] += 1
+        country_data[code]["price"] = min(country_data[code]["price"], float(acc["price"]))
 
-    # Build one button per country
+    # Sort alphabetically by country name
+    sorted_countries = sorted(country_data.items(), key=lambda x: x[1]["name"])
+    total_countries  = len(sorted_countries)
+    total_pages      = max(1, (total_countries + BUY_PAGE_SIZE - 1) // BUY_PAGE_SIZE)
+    page             = max(0, min(page, total_pages - 1))
+
+    page_slice = sorted_countries[page * BUY_PAGE_SIZE : (page + 1) * BUY_PAGE_SIZE]
+
+    # Build 2-column buttons: 🏳 CC+dial | price$
     buttons = []
-    for code, info in sorted(country_counts.items(), key=lambda x: x[1]["name"]):
-        flag = country_flag(code)
-        label = f"+{info['dial']} : {flag} {info['name']} [ {info['count']} Available ]"
-        buttons.append([InlineKeyboardButton(label, callback_data=f"buycountry_{code}")])
+    row = []
+    for code, info in page_slice:
+        flag  = country_flag(code)
+        label = f"{flag} {code}+{info['dial']} | {info['price']}$"
+        btn   = InlineKeyboardButton(label, callback_data=f"buycountry_{code}")
+        row.append(btn)
+        if len(row) == 2:
+            buttons.append(row)
+            row = []
+    if row:
+        buttons.append(row)
+
+    # Pagination row
+    nav_row = []
+    if page > 0:
+        nav_row.append(InlineKeyboardButton("◀️ Prev", callback_data=f"buy_page_{page - 1}"))
+    nav_row.append(InlineKeyboardButton(f"[{page + 1}] of {total_pages}", callback_data="noop"))
+    if page < total_pages - 1:
+        nav_row.append(InlineKeyboardButton("Next ▶️", callback_data=f"buy_page_{page + 1}"))
+    if nav_row:
+        buttons.append(nav_row)
 
     buttons.append([InlineKeyboardButton("🔙 Back to Menu", callback_data="menu_back")])
 
-    total = sum(v["count"] for v in country_counts.values())
+    total_accounts = sum(v["count"] for v in country_data.values())
     await query.edit_message_text(
         f"<b>🛒 MARKETPLACE</b>\n"
         f"<b>▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰</b>\n\n"
-        f"<b>📦 {total} account(s) available</b>\n\n"
-        f"Select a country to browse accounts:",
+        f"✅ Page {page + 1} of {total_pages}\n"
+        f"✅ <b>{total_accounts} account(s)</b> across <b>{total_countries} countries</b>\n\n"
+        f"Select a country to browse:",
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup(buttons))
 
@@ -2446,6 +2478,299 @@ async def admin_broadcast(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         parse_mode="HTML")
 
 
+# ── ADMIN PANEL ───────────────────────────────────────────────────────────────
+async def admin_panel(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Central admin panel — only visible to admin."""
+    query = update.callback_query
+    if query.from_user.id != ADMIN_ID:
+        await query.answer("Not authorised.", show_alert=True)
+        return
+    await query.answer()
+
+    with get_db() as conn:
+        total_users    = conn.execute("SELECT COUNT(*) AS c FROM users").fetchone()["c"]
+        total_balance  = conn.execute("SELECT COALESCE(SUM(balance),0) AS s FROM users").fetchone()["s"]
+        avail_accounts = conn.execute("SELECT COUNT(*) AS c FROM accounts WHERE status='available'").fetchone()["c"]
+        pending_deps   = conn.execute("SELECT COUNT(*) AS c FROM deposits WHERE status='pending'").fetchone()["c"]
+        pending_wds    = conn.execute("SELECT COUNT(*) AS c FROM withdrawals WHERE status='pending'").fetchone()["c"]
+        pending_sells  = conn.execute("SELECT COUNT(*) AS c FROM accounts WHERE status='pending_review'").fetchone()["c"]
+
+    await query.edit_message_text(
+        f"<b>⚙️ ADMIN PANEL</b>\n"
+        f"<b>▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰</b>\n\n"
+        f"👥 <b>Total Users:</b> <b>{total_users}</b>\n"
+        f"🏦 <b>Total Wallet Funds:</b> <b>{fmt(float(total_balance))}</b>\n"
+        f"📦 <b>Available Accounts:</b> <b>{avail_accounts}</b>\n\n"
+        f"<b>▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰</b>\n"
+        f"⏳ <b>Pending Deposits:</b> <b>{pending_deps}</b>\n"
+        f"💸 <b>Pending Withdrawals:</b> <b>{pending_wds}</b>\n"
+        f"🔄 <b>Pending Sell Reviews:</b> <b>{pending_sells}</b>\n"
+        f"<b>▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰</b>",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("➕ Add Account",      callback_data="ap_add_account"),
+             InlineKeyboardButton("📦 All Accounts",     callback_data="ap_list_accounts")],
+            [InlineKeyboardButton("🔄 Pending Sells",    callback_data="ap_pending_sells"),
+             InlineKeyboardButton("💰 Country Prices",   callback_data="ap_prices_menu")],
+            [InlineKeyboardButton("📥 Pending Deposits", callback_data="ap_pending_deps"),
+             InlineKeyboardButton("💸 Pending Withdrawals", callback_data="ap_pending_wds")],
+            [InlineKeyboardButton("👥 User Stats",       callback_data="ap_user_stats"),
+             InlineKeyboardButton("📢 Broadcast",        callback_data="ap_broadcast_prompt")],
+            [InlineKeyboardButton("🔙 Back to Menu",     callback_data="menu_back")],
+        ])
+    )
+
+async def ap_add_account(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Admin panel → Add Account (redirects to /login_account flow)."""
+    query = update.callback_query
+    if query.from_user.id != ADMIN_ID:
+        await query.answer("Not authorised.", show_alert=True); return
+    await query.answer()
+    await query.edit_message_text(
+        "<b>➕ ADD ACCOUNT</b>\n\n"
+        "Use the command below to add a new account by logging in via phone + OTP:\n\n"
+        "<code>/login_account</code>\n\n"
+        "The bot will guide you through:\n"
+        "1️⃣ Enter phone number\n"
+        "2️⃣ Enter OTP\n"
+        "3️⃣ Enter price\n\n"
+        "The account will be added and listed instantly.",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔙 Back to Panel", callback_data="admin_panel")]
+        ])
+    )
+
+async def ap_list_accounts(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Admin panel → All Accounts."""
+    query = update.callback_query
+    if query.from_user.id != ADMIN_ID:
+        await query.answer("Not authorised.", show_alert=True); return
+    await query.answer()
+
+    with get_db() as conn:
+        rows = conn.execute(
+            "SELECT id, phone, price, status, buyer_id FROM accounts ORDER BY id DESC LIMIT 30"
+        ).fetchall()
+
+    if not rows:
+        await query.edit_message_text(
+            "📦 No accounts yet.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="admin_panel")]]))
+        return
+
+    icons = {"available": "🟢", "sold": "✅", "pending_review": "🔄"}
+    lines = [f"<b>📦 Accounts (latest 30)</b>\n<b>▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰</b>"]
+    for r in rows:
+        flag, _ = phone_to_country(r["phone"] or "")
+        icon = icons.get(r["status"], "⚪")
+        line = f"{icon} <b>#{r['id']}</b> {flag} <code>{mask_phone(r['phone'] or '')}</code> — <b>{fmt(r['price'])}</b> [{r['status']}]"
+        if r["buyer_id"]:
+            line += f" → <code>{r['buyer_id']}</code>"
+        lines.append(line)
+
+    text = "\n".join(lines)
+    if len(text) > 3800:
+        text = text[:3800] + "\n\n<i>... truncated</i>"
+
+    await query.edit_message_text(
+        text, parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔙 Back to Panel", callback_data="admin_panel")]
+        ])
+    )
+
+async def ap_pending_sells(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Admin panel → Pending sell submissions."""
+    query = update.callback_query
+    if query.from_user.id != ADMIN_ID:
+        await query.answer("Not authorised.", show_alert=True); return
+    await query.answer()
+
+    with get_db() as conn:
+        rows = conn.execute(
+            "SELECT id, phone FROM accounts WHERE status='pending_review' ORDER BY id DESC"
+        ).fetchall()
+
+    if not rows:
+        await query.edit_message_text(
+            "✅ No pending sell submissions.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="admin_panel")]]))
+        return
+
+    buttons = []
+    for r in rows:
+        flag, _ = phone_to_country(r["phone"] or "")
+        buttons.append([
+            InlineKeyboardButton(f"✅ Approve #{r['id']} {flag}", callback_data=f"sell_approve_{r['id']}"),
+            InlineKeyboardButton(f"❌ Reject #{r['id']}",         callback_data=f"sell_reject_{r['id']}"),
+        ])
+    buttons.append([InlineKeyboardButton("🔙 Back to Panel", callback_data="admin_panel")])
+
+    await query.edit_message_text(
+        f"<b>🔄 Pending Sell Reviews ({len(rows)})</b>\n\n"
+        "Approve to set a price and list, or reject to remove.",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(buttons)
+    )
+
+async def ap_prices_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Admin panel → Country Prices (re-uses existing price panel)."""
+    query = update.callback_query
+    if query.from_user.id != ADMIN_ID:
+        await query.answer("Not authorised.", show_alert=True); return
+    await query.answer()
+
+    with get_db() as conn:
+        rows = conn.execute(
+            "SELECT country_code, country_name, dial_code, price "
+            "FROM country_prices ORDER BY country_name ASC"
+        ).fetchall()
+
+    text = (
+        "<b>💰 Country Price Manager</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"Total countries: <b>{len(rows)}</b>\n\n"
+        "Tap a country to edit or delete it.\n"
+        "Tap ➕ Add Country to add a new one."
+    )
+    # Add back-to-panel button at top of keyboard
+    kb = _prices_panel_keyboard(rows)
+    # Inject a "Back to Panel" row before the last row
+    rows_list = list(kb.inline_keyboard)
+    rows_list.insert(0, [InlineKeyboardButton("🔙 Back to Panel", callback_data="admin_panel")])
+    await query.edit_message_text(
+        text, parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(rows_list)
+    )
+
+async def ap_pending_deps(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Admin panel → Pending deposits with approve/reject buttons."""
+    query = update.callback_query
+    if query.from_user.id != ADMIN_ID:
+        await query.answer("Not authorised.", show_alert=True); return
+    await query.answer()
+
+    with get_db() as conn:
+        deps = conn.execute(
+            "SELECT d.id, d.user_id, d.amount, u.username "
+            "FROM deposits d JOIN users u ON d.user_id=u.user_id "
+            "WHERE d.status='pending' ORDER BY d.id DESC"
+        ).fetchall()
+
+    if not deps:
+        await query.edit_message_text(
+            "✅ No pending deposits.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="admin_panel")]]))
+        return
+
+    buttons = []
+    for d in deps:
+        label = f"#{d['id']} @{d['username'] or d['user_id']} — {fmt(d['amount'])}"
+        buttons.append([
+            InlineKeyboardButton(f"✅ {label}", callback_data=f"dep_approve_{d['id']}"),
+            InlineKeyboardButton(f"❌ Reject",  callback_data=f"dep_reject_{d['id']}"),
+        ])
+    buttons.append([InlineKeyboardButton("🔙 Back to Panel", callback_data="admin_panel")])
+
+    await query.edit_message_text(
+        f"<b>📥 Pending Deposits ({len(deps)})</b>",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(buttons)
+    )
+
+async def ap_pending_wds(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Admin panel → Pending withdrawals with approve/reject buttons."""
+    query = update.callback_query
+    if query.from_user.id != ADMIN_ID:
+        await query.answer("Not authorised.", show_alert=True); return
+    await query.answer()
+
+    with get_db() as conn:
+        wds = conn.execute(
+            "SELECT id, user_id, amount, upi_id FROM withdrawals WHERE status='pending' ORDER BY id DESC"
+        ).fetchall()
+
+    if not wds:
+        await query.edit_message_text(
+            "✅ No pending withdrawals.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="admin_panel")]]))
+        return
+
+    buttons = []
+    for w in wds:
+        label = f"#{w['id']} <code>{w['user_id']}</code> — {fmt(w['amount'])}"
+        buttons.append([
+            InlineKeyboardButton(f"✅ Approve #{w['id']}", callback_data=f"wd_approve_{w['id']}"),
+            InlineKeyboardButton(f"❌ Reject #{w['id']}",  callback_data=f"wd_reject_{w['id']}"),
+        ])
+    buttons.append([InlineKeyboardButton("🔙 Back to Panel", callback_data="admin_panel")])
+
+    lines = [f"<b>💸 Pending Withdrawals ({len(wds)})</b>\n"]
+    for w in wds:
+        lines.append(f"<b>#{w['id']}</b> — User <code>{w['user_id']}</code> — <b>{fmt(w['amount'])}</b>\n   UPI: <code>{w['upi_id'] or '—'}</code>")
+
+    await query.edit_message_text(
+        "\n".join(lines), parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(buttons)
+    )
+
+async def ap_user_stats(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Admin panel → User stats (inline version)."""
+    query = update.callback_query
+    if query.from_user.id != ADMIN_ID:
+        await query.answer("Not authorised.", show_alert=True); return
+    await query.answer("⏳ Loading stats...")
+
+    with get_db() as conn:
+        users      = conn.execute("SELECT user_id, balance, created_at FROM users").fetchall()
+        dep_count  = conn.execute("SELECT COUNT(*) AS c FROM deposits WHERE status='approved'").fetchone()["c"]
+        sell_count = conn.execute("SELECT COUNT(*) AS c FROM accounts WHERE status='sold'").fetchone()["c"]
+        wd_count   = conn.execute("SELECT COUNT(*) AS c FROM withdrawals WHERE status='approved'").fetchone()["c"]
+        total_bal  = conn.execute("SELECT COALESCE(SUM(balance),0) AS s FROM users").fetchone()["s"]
+
+    total  = len(users)
+    funded = sum(1 for u in users if float(u["balance"]) > 0)
+    from datetime import datetime, timezone, timedelta
+    week_ago = datetime.now(timezone.utc) - timedelta(days=7)
+    new_7d = sum(1 for u in users if u["created_at"] and
+                 (u["created_at"].replace(tzinfo=timezone.utc) if u["created_at"].tzinfo is None else u["created_at"]) >= week_ago)
+
+    await query.edit_message_text(
+        f"<b>👥 USER STATISTICS</b>\n"
+        f"<b>▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰</b>\n\n"
+        f"👤 Total Users:        <b>{total}</b>\n"
+        f"💰 Users with Balance: <b>{funded}</b>\n"
+        f"🆕 Joined Last 7d:     <b>{new_7d}</b>\n\n"
+        f"<b>▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰</b>\n"
+        f"✅ Approved Deposits:  <b>{dep_count}</b>\n"
+        f"🛒 Accounts Sold:      <b>{sell_count}</b>\n"
+        f"💸 Withdrawals Paid:   <b>{wd_count}</b>\n"
+        f"🏦 Total Wallet Funds: <b>{fmt(float(total_bal))}</b>\n"
+        f"<b>▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰</b>",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔙 Back to Panel", callback_data="admin_panel")]
+        ])
+    )
+
+async def ap_broadcast_prompt(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Admin panel → Broadcast prompt."""
+    query = update.callback_query
+    if query.from_user.id != ADMIN_ID:
+        await query.answer("Not authorised.", show_alert=True); return
+    await query.answer()
+    await query.edit_message_text(
+        "<b>📢 BROADCAST</b>\n\n"
+        "Use the command below to send a message to all users:\n\n"
+        "<code>/broadcast Your message here</code>\n\n"
+        "Supports HTML formatting and multiple lines.",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔙 Back to Panel", callback_data="admin_panel")]
+        ])
+    )
+
 # ── Flask + Main ──────────────────────────────────────────────────────────────
 def build_app() -> Application:
     app = Application.builder().token(BOT_TOKEN).build()
@@ -2522,6 +2847,17 @@ def build_app() -> Application:
     )
     app.add_handler(CommandHandler("start",    start))
     app.add_handler(CallbackQueryHandler(check_joined_cb, pattern="^check_joined$"))
+    # ── Admin Panel ──────────────────────────────────────────────────────────
+    app.add_handler(CallbackQueryHandler(admin_panel,          pattern="^admin_panel$"))
+    app.add_handler(CallbackQueryHandler(ap_add_account,       pattern="^ap_add_account$"))
+    app.add_handler(CallbackQueryHandler(ap_list_accounts,     pattern="^ap_list_accounts$"))
+    app.add_handler(CallbackQueryHandler(ap_pending_sells,     pattern="^ap_pending_sells$"))
+    app.add_handler(CallbackQueryHandler(ap_prices_menu,       pattern="^ap_prices_menu$"))
+    app.add_handler(CallbackQueryHandler(ap_pending_deps,      pattern="^ap_pending_deps$"))
+    app.add_handler(CallbackQueryHandler(ap_pending_wds,       pattern="^ap_pending_wds$"))
+    app.add_handler(CallbackQueryHandler(ap_user_stats,        pattern="^ap_user_stats$"))
+    app.add_handler(CallbackQueryHandler(ap_broadcast_prompt,  pattern="^ap_broadcast_prompt$"))
+    # ─────────────────────────────────────────────────────────────────────────
     app.add_handler(deposit_conv)
     app.add_handler(withdraw_conv)
     app.add_handler(login_conv)
@@ -2558,6 +2894,8 @@ def build_app() -> Application:
     app.add_handler(MessageHandler(filters.Regex(r"^/reject_\d+$")  & filters.User(ADMIN_ID), admin_reject))
     app.add_handler(MessageHandler(filters.Regex(r"^/del_\d+$")     & filters.User(ADMIN_ID), admin_delete))
     app.add_handler(CallbackQueryHandler(buy_menu,      pattern="^menu_buy$"))
+    app.add_handler(CallbackQueryHandler(buy_menu,      pattern=r"^buy_page_\d+$"))
+    app.add_handler(CallbackQueryHandler(lambda u, c: u.callback_query.answer(), pattern="^noop$"))
     app.add_handler(CallbackQueryHandler(buy_country,   pattern=r"^buycountry_"))
     app.add_handler(CallbackQueryHandler(view_account,  pattern=r"^view_\d+$"))
     app.add_handler(CallbackQueryHandler(confirm_buy,   pattern=r"^confirm_\d+$"))
