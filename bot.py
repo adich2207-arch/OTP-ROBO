@@ -2566,11 +2566,29 @@ def main():
     init_db()
     ptb_app = build_app()
 
-    logger.info("🚀 Starting bot in polling mode...")
-    ptb_app.run_polling(
-        allowed_updates=["message", "callback_query"],
-        drop_pending_updates=True,
-    )
+    import asyncio
+    import signal
+
+    async def run():
+        logger.info("🚀 Starting bot in polling mode...")
+        async with ptb_app:
+            await ptb_app.bot.delete_webhook(drop_pending_updates=True)
+            await ptb_app.start()
+            await ptb_app.updater.start_polling(
+                allowed_updates=["message", "callback_query"],
+                drop_pending_updates=True,
+            )
+            logger.info("✅ Bot is running. Press Ctrl+C to stop.")
+            # Keep running until SIGINT or SIGTERM
+            stop_event = asyncio.Event()
+            loop = asyncio.get_running_loop()
+            for sig in (signal.SIGINT, signal.SIGTERM):
+                loop.add_signal_handler(sig, stop_event.set)
+            await stop_event.wait()
+            await ptb_app.updater.stop()
+            await ptb_app.stop()
+
+    asyncio.run(run())
 
 if __name__ == "__main__":
     main()
