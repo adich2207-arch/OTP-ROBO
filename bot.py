@@ -2451,22 +2451,14 @@ async def admin_broadcast(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     with get_db() as conn:
         users = conn.execute("SELECT user_id FROM users").fetchall()
 
-    bot_username = (await ctx.bot.get_me()).username
-    kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("🛒 Buy Now", url=f"https://t.me/{bot_username}?start=buy")]
-    ])
-
     sent = 0
     failed = 0
     for u in users:
         try:
             await ctx.bot.send_message(
                 u["user_id"],
-                f"📢 <b>Announcement</b>\n"
-                f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
-                f"{text}",
-                parse_mode="HTML",
-                reply_markup=kb
+                text,
+                parse_mode="HTML"
             )
             sent += 1
         except Exception:
