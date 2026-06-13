@@ -215,8 +215,10 @@ def get_pool() -> ConnectionPool:
     if _pool is None or _pool.closed:
         _pool = ConnectionPool(
             DATABASE_URL,
-            min_size=1,
-            max_size=5,
+            min_size=2,
+            max_size=10,
+            max_idle=300,
+            reconnect_timeout=5,
             kwargs={"row_factory": dict_row},
         )
     return _pool
@@ -225,6 +227,7 @@ def get_db():
     return get_pool().connection()
 
 def init_db():
+    get_pool()  # warm up the connection pool on startup
     with get_db() as conn:
         conn.execute("""CREATE TABLE IF NOT EXISTS users (
             user_id BIGINT PRIMARY KEY, username TEXT DEFAULT '',
@@ -480,7 +483,7 @@ async def cancel(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def deposit_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Step 1 — Ask how much they want to deposit."""
     query = update.callback_query
-    await query.answer()
+    await query.answer()  # answer immediately so Telegram stops the spinner
     await query.edit_message_text(
         f"<b>💵 RECHARGE WALLET</b>\n"
         f"<b>▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰</b>\n\n"
