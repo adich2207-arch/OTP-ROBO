@@ -2566,21 +2566,11 @@ def main():
     init_db()
     ptb_app = build_app()
 
-    import asyncio
-
-    async def run():
-        async with ptb_app:
-            await ptb_app.bot.delete_webhook(drop_pending_updates=True)
-            logger.info("🚀 Starting bot in polling mode...")
-            await ptb_app.start()
-            await ptb_app.updater.start_polling(
-                allowed_updates=["message", "callback_query"],
-                drop_pending_updates=True,
-            )
-            await ptb_app.updater.idle()
-            await ptb_app.stop()
-
-    asyncio.run(run())
+    logger.info("🚀 Starting bot in polling mode...")
+    ptb_app.run_polling(
+        allowed_updates=["message", "callback_query"],
+        drop_pending_updates=True,
+    )
 
 if __name__ == "__main__":
     main()
